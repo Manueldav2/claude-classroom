@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.3.1';
+const VERSION = '2.3.2';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1683,19 +1683,51 @@ COMMANDS['hook-session-start'] = (args) => {
   console.log(out.join('\n'));
 };
 
+// Estimate CURRENT context usage from Claude Code's transcript: the latest turn's
+// usage = input_tokens + cache_read + cache_creation ≈ the live prompt size (and it
+// drops right after a /compact, so it tracks reality, not the ever-growing log).
+function estimateContext(transcriptPath) {
+  try {
+    const lines = fs.readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean);
+    let used = 0, model = '';
+    for (let i = lines.length - 1; i >= 0 && i > lines.length - 80; i--) {
+      let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+      const u = o && o.message && o.message.usage;
+      if (u && u.input_tokens != null) {
+        used = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+        model = o.message.model || '';
+        break;
+      }
+    }
+    if (!used) return null;
+    let limit = parseInt(process.env.CLASSROOM_CONTEXT_LIMIT || '0', 10);
+    if (!limit) limit = /1m|1000000|\[1m\]/i.test(model) ? 1000000 : 200000;
+    return { used, limit, pct: Math.min(100, Math.round((100 * used) / limit)) };
+  } catch { return null; }
+}
+
 COMMANDS['hook-user-prompt'] = (args) => {
   const sid = sessionId(args);
   const m = getMember(sid);
   if (!m) return;
-  // low-context nudge: when self-reported headroom is low, remind to checkpoint +
-  // compact BEFORE degrading (throttled so it doesn't nag every turn).
+  // Auto-track REAL context usage and self-manage headroom (overrides stale guesses).
+  let est = null;
+  if (!process.stdin.isTTY) {
+    try { const inp = fs.readFileSync(0, 'utf8'); if (inp) { const j = JSON.parse(inp); if (j.transcript_path) est = estimateContext(j.transcript_path); } } catch {}
+  }
+  if (est) { m.headroom = Math.max(0, 100 - est.pct); writeMember(m); }
+  const headroom = m.headroom ?? 100;
   const threshold = parseInt(process.env.CLASSROOM_COMPACT_AT || '25', 10);
-  if ((m.headroom ?? 100) <= threshold && now() - (m.compactNudgedAt || 0) > 5 * 60 * 1000) {
-    m.compactNudgedAt = now();
-    writeMember(m);
-    console.log(`⚠ Context headroom is ${m.headroom}% — low. Before you degrade or cut corners:`);
-    console.log('   1) classroom checkpoint "<where you are>" --next "<what\'s left>"   (saves task + claims + next steps; claims survive)');
-    console.log('   2) /compact   3) classroom resume   — then keep going. Update headroom as you work: classroom profile --headroom <0-100>.');
+  const sinceNudge = now() - (m.compactNudgedAt || 0);
+  if (headroom <= 12 && sinceNudge > 90 * 1000) {
+    // near full → tell the session to compact itself NOW (it'll act on this directive).
+    m.compactNudgedAt = now(); writeMember(m);
+    console.log(`🔴 CONTEXT ~${100 - headroom}% FULL — compact yourself NOW, before you lose the thread:`);
+    console.log('   1) classroom checkpoint "<where you are>" --next "<what\'s left>"   (task + claims + next steps saved; claims survive)');
+    console.log('   2) /compact   3) classroom resume   — do this now without being asked, then keep going.');
+  } else if (headroom <= threshold && sinceNudge > 5 * 60 * 1000) {
+    m.compactNudgedAt = now(); writeMember(m);
+    console.log(`⚠ Context headroom ~${headroom}% — getting low. Soon: checkpoint, /compact, then resume (claims survive).`);
   }
   COMMANDS.since({ _: [], quiet: true });
 };

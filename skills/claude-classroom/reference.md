@@ -121,8 +121,12 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   task + claims + next-steps to the board (claims survive compaction); `/compact`;
   then `resume` reloads everything (+ active project + new activity). `--handoff`
   also posts the work as an open task so a teammate can continue. The per-turn
-  UserPromptSubmit hook **auto-nudges** to checkpoint+compact when self-reported
-  headroom ≤ 25% (throttled 5 min; `CLASSROOM_COMPACT_AT` overrides the threshold).
+  UserPromptSubmit hook reads **real context usage** from the transcript (latest
+  turn's input+cache tokens ≈ live prompt size; infers a 200k vs 1M limit from the
+  model, `CLASSROOM_CONTEXT_LIMIT` overrides), auto-sets the agent's headroom from
+  it, and at ≥~88% full fires a 🔴 "compact yourself NOW" directive (checkpoint →
+  /compact → resume) so the session self-compacts before degrading — no asking, no
+  Stop hook. Gentler reminder under 25%. The dashboard headroom now reflects reality.
 - **Overseer model.** `escalate "<q>"` to the human — engine enforces **one open
   escalation at a time** (others must resolve among themselves / wait); `escalations`
   lists open ones; `answer <id> "<direction>"` closes + notifies. SKILL §O: decide
