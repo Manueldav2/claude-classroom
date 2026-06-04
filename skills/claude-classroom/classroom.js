@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.3.2';
+const VERSION = '2.4.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1680,7 +1680,48 @@ COMMANDS['hook-session-start'] = (args) => {
   out.push('Before editing files, coordinate: `node ~/.claude/skills/claude-classroom/classroom.js survey <files>` then `claim` them, commit atomically, `sync` findings. Full protocol: the claude-classroom skill.');
   out.push('If you have deep context on a part of THIS codebase, declare it so work routes to you: `classroom own "<area or path>"`. To ask the operator of an area: `classroom whoknows <area>` then `classroom ask "<area>" "<question>"`.');
   out.push(`Tell the user they can watch the live dashboard with:  ${watchCmd()}`);
+  // After an auto-compaction this SessionStart hook fires with source "compact" —
+  // re-inject the checkpoint so the session resumes exactly where it was.
+  const cp = readCheckpoint(sid);
+  if (cp && now() - cp.ts < 30 * 60 * 1000) {
+    out.push('');
+    out.push('⏪ RESUMING after a compaction — pick up exactly where you left off:');
+    out.push(`   task: ${cp.task || '(none)'}`);
+    out.push(`   you were: ${cp.summary}`);
+    if (cp.next) out.push(`   next: ${cp.next}`);
+    if (cp.claims && cp.claims.length) out.push(`   your claims (still held): ${cp.claims.join(', ')}`);
+    if (cp.uncommitted) out.push(`   uncommitted before compaction: ${cp.uncommitted}`);
+    out.push('   Run `classroom resume` for the full picture, then keep going.');
+  }
   console.log(out.join('\n'));
+};
+
+// PreCompact hook — auto-checkpoint to the board right before ANY compaction
+// (manual or auto). This is what makes /compact unnecessary: state + claims are
+// saved automatically, and SessionStart(compact) re-injects them afterward.
+COMMANDS['hook-precompact'] = (args) => {
+  ensureDirs();
+  let sid = sessionId(args);
+  let trigger = '';
+  if (!process.stdin.isTTY) {
+    try { const inp = fs.readFileSync(0, 'utf8'); if (inp) { const j = JSON.parse(inp); if ((!process.env.CLAUDE_CODE_SESSION_ID) && j.session_id) sid = j.session_id; trigger = j.trigger || ''; } } catch {}
+  }
+  const m = getMember(sid);
+  if (!m) return; // not enrolled — nothing to checkpoint
+  touch(sid);
+  const claims = readClaims().filter((c) => c.sid === sid).map((c) => c.path);
+  const status = (git(['status', '--porcelain']) || '').split('\n').filter(Boolean).slice(0, 10).map((l) => l.trim()).join('; ');
+  const prev = readCheckpoint(sid);
+  const recentManual = prev && !prev.auto && now() - prev.ts < 15 * 60 * 1000;
+  const cp = {
+    sid, task: m.task || null,
+    summary: recentManual ? prev.summary : '(auto-checkpoint before compaction)',
+    next: recentManual ? prev.next : '',
+    files: recentManual ? prev.files : [],
+    claims, branch: repo().branch || null, uncommitted: status, auto: !recentManual, ts: now(),
+  };
+  writeCheckpoint(cp);
+  logEvent(sid, 'precompact', `auto-checkpointed before ${trigger || 'compaction'} (${claims.length} claim(s) held)`);
 };
 
 // Estimate CURRENT context usage from Claude Code's transcript: the latest turn's
@@ -1720,14 +1761,15 @@ COMMANDS['hook-user-prompt'] = (args) => {
   const threshold = parseInt(process.env.CLASSROOM_COMPACT_AT || '25', 10);
   const sinceNudge = now() - (m.compactNudgedAt || 0);
   if (headroom <= 12 && sinceNudge > 90 * 1000) {
-    // near full → tell the session to compact itself NOW (it'll act on this directive).
+    // near full → Claude Code will auto-compact; we just make sure state is captured
+    // first (PreCompact also auto-checkpoints). No manual /compact needed.
     m.compactNudgedAt = now(); writeMember(m);
-    console.log(`🔴 CONTEXT ~${100 - headroom}% FULL — compact yourself NOW, before you lose the thread:`);
-    console.log('   1) classroom checkpoint "<where you are>" --next "<what\'s left>"   (task + claims + next steps saved; claims survive)');
-    console.log('   2) /compact   3) classroom resume   — do this now without being asked, then keep going.');
+    console.log(`🔴 CONTEXT ~${100 - headroom}% FULL — auto-compaction is imminent. You do NOT need to run /compact.`);
+    console.log('   Just finish + COMMIT your current atomic step now, and leave good resume notes:');
+    console.log('   classroom checkpoint "<where you are>" --next "<what\'s left>"   (claims + task survive; you\'ll be re-oriented automatically after the compaction).');
   } else if (headroom <= threshold && sinceNudge > 5 * 60 * 1000) {
     m.compactNudgedAt = now(); writeMember(m);
-    console.log(`⚠ Context headroom ~${headroom}% — getting low. Soon: checkpoint, /compact, then resume (claims survive).`);
+    console.log(`⚠ Context headroom ~${headroom}% — getting low. Commit your current step and \`classroom checkpoint\` soon; auto-compaction will handle the rest (no /compact needed).`);
   }
   COMMANDS.since({ _: [], quiet: true });
 };
@@ -1785,6 +1827,7 @@ COMMANDS.install = (args) => {
   };
   addHook('SessionStart', 'hook-session-start');
   addHook('UserPromptSubmit', 'hook-user-prompt');
+  addHook('PreCompact', 'hook-precompact');
   fs.writeFileSync(sf, JSON.stringify(settings, null, 2));
 
   // 3) short `classroom` launcher on PATH so `classroom watch` works anywhere
@@ -1986,6 +2029,7 @@ COMMANDS.adopt = (args) => {
       const add = (ev, sub) => { s.hooks[ev] = s.hooks[ev] || []; if (!JSON.stringify(s.hooks[ev]).includes('classroom.js')) s.hooks[ev].push({ hooks: [{ type: 'command', command: hookCmd(sub) }] }); };
       add('SessionStart', 'hook-session-start');
       add('UserPromptSubmit', 'hook-user-prompt');
+      add('PreCompact', 'hook-precompact');
       fs.writeFileSync(sf, JSON.stringify(s, null, 2));
       n++;
     } catch {}

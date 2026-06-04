@@ -112,6 +112,19 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.4 — fully automatic compaction (no /compact)
+- A **PreCompact hook** (`hook-precompact`) auto-checkpoints task + claims + branch +
+  uncommitted state to the board right before ANY compaction (manual or native
+  auto-compact); preserves a recent manual checkpoint instead of clobbering it.
+- The **SessionStart hook fires after a compaction** (source "compact") and
+  re-injects the checkpoint (⏪ RESUMING…), so the session continues exactly where it
+  was — no `/compact`, no manual checkpoint, no lost claims. install/adopt register
+  PreCompact alongside SessionStart + UserPromptSubmit. The near-full nudge no longer
+  says "run /compact" — it just says commit your current step; auto-compaction +
+  auto-checkpoint + auto-resume handle the rest. Relies on Claude Code's native
+  auto-compact (~95%; `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+  tune it for 1M models).
+
 ## v2.3 — long-running completion, self-compaction, overseer model
 - **Projects.** `project "<goal>" --done "<criteria>"` sets a persistent goal;
   `goal` shows backlog progress (open/doing/done); `project done` completes (guards

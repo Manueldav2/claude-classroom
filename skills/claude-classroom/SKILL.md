@@ -369,18 +369,26 @@ AND verified** — never stop early. The rhythm:
 `goal` shows backlog progress any time. If the user says "don't stop until it's
 finished," that's this loop: build → verify → fix → repeat → done.
 
-## §N. Manage your OWN context — checkpoint, compact, resume
-Don't get lazy or cut corners when your context window gets low. Instead, compact
-yourself on your own schedule without losing progress:
-1. Keep `profile --headroom <0-100>` roughly current — once it drops below ~25%,
-   the per-turn hook **auto-reminds you** to checkpoint + compact. When it's low:
-2. `classroom checkpoint "<where you are>" --next "<what's left>" --files a,b` —
-   your task, claims, and next steps are saved to the board, **and your claims stay
-   held through the compaction**.
-3. Run `/compact`, then `classroom resume` to reload your task + claims + next
-   steps and keep working as if nothing happened.
-4. If you might not come back, `checkpoint --handoff` also posts your work as an
-   open task so a teammate continues it. The project never stalls on one session.
+## §N. Context manages itself — you never run /compact
+Once installed, low-context handling is **automatic** — you don't get lazy and you
+don't type `/compact`:
+- Claude Code **auto-compacts** when the context fills (~95%).
+- A **PreCompact hook auto-checkpoints** your task + claims + branch + uncommitted
+  state to the board right before it — your claims stay held.
+- After compaction the **SessionStart hook re-injects your checkpoint**, so you
+  resume exactly where you were and keep going.
+
+Your only jobs:
+- When the per-turn hook says context is ~full (it reads your *real* usage),
+  **finish and commit your current atomic step** so nothing's lost.
+- Optionally `classroom checkpoint "<where you are>" --next "<what's left>"` to leave
+  richer resume notes than the automatic one (the auto-checkpoint keeps a manual one
+  if it's recent).
+- Use `checkpoint --handoff` if you'd rather a teammate continue it than resume
+  yourself. `classroom resume` reprints your checkpoint any time.
+
+Do **not** run `/compact` — let auto-compaction handle it; the project never stalls
+and nothing is lost.
 
 ## §O. The overseer model — decide, verify, escalate sparingly
 The human is the **overseer**, working on the highest-value things — protect their
