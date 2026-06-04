@@ -112,6 +112,18 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.1 — codebase ownership / domain operators
+- A session declares the areas it operates: `own "backend/auth, payments, src/api/**"`
+  (or `--owns` on enroll/profile). `owners` lists who runs what; shown on the
+  dashboard (`⬡ operates: …`).
+- `ownerMatch()` scores a member against a path/area (exact / path-prefix / topic).
+  `fitScore` and therefore `suggest`, `pull`, and mission partitioning now rank
+  **ownership above generic expertise** — a `payments` task routes to the payments
+  operator even if someone else has more headroom. Verified.
+- `whoknows <area>` finds the operator; `ask "<area>" "<question>"` routes a
+  question to that operator (delivered next turn via the message hook; they reply
+  with `msg`). No clear owner → broadcast to all.
+
 ## v2.0 — missions, messaging, distribution, interop
 - **Group missions.** `mission "<goal>"` broadcasts a goal; the initiator partitions
   it and `delegate --to <agent> --after-commit` assigns pieces by fit, taking one

@@ -64,12 +64,15 @@ install --no-precommit`). `classroom uninstall` reverses everything.
 node ~/.claude/skills/claude-classroom/classroom.js enroll \
   --task "<one line: what you're about to work on>" \
   --expertise "areas/files you have deep context on, comma-separated" \
+  --owns "paths/areas you are the operator of, e.g. backend/auth, payments" \
   --headroom <0-100>
 ```
 `--headroom` = how much context-window/token budget you have left (100 = fresh,
-20 = nearly full). This lets the crew reason about who should do what. Read the
-printed board, note who else is active, and **tell the user** who's here and on
-what. The output also warns you about **uncoordinated peers** (see §A).
+20 = nearly full). `--owns` = the parts of the codebase you know best and act as
+**operator** for — declare these so the crew routes questions and area-specific
+tasks to you (see §K). This lets the crew reason about who should do what. Read
+the printed board, note who else is active, and **tell the user** who's here and
+on what. The output also warns you about **uncoordinated peers** (see §A).
 
 ### 2. Survey before you touch anything
 ```
@@ -309,6 +312,28 @@ initiator you're the conductor for that mission, not the sole worker.
 - **Reports/visual**: `report` for a post‑run "who did what"; `html` to open the
   board in a browser.
 
+## §K. Codebase ownership — send work to whoever knows it
+Different sessions know different parts of the codebase best. Each session should
+**declare the areas it operates** so work flows to the right place:
+```
+node ~/.claude/skills/claude-classroom/classroom.js own "backend/auth, payments, src/api/**"
+node ~/.claude/skills/claude-classroom/classroom.js owners      # who operates what
+```
+Then the crew routes by ownership:
+- **Don't guess about an area you don't own — ask its operator.** Find them and
+  ask in one step:
+  `whoknows <area>`  then  `ask "<area-or-path>" "<your question>"` — the question
+  goes to that operator and lands on their next turn; they reply with `msg`.
+- **Delegate area-specific tasks to the operator.** `suggest` now ranks
+  ownership above generic expertise, so a `payments` task is recommended to
+  whoever owns `payments` even if someone else has more free budget. When
+  partitioning a mission (§H), give each piece to its area's operator.
+- If you're about to edit a file in someone else's zone, `claim` it *and* give
+  them a heads-up (`msg`/`ask`) — they may have context that saves you a wrong turn.
+
+This is how the crew works *efficiently*: the deep-context operator handles (or
+answers about) its area; everyone else delegates into it instead of relearning it.
+
 ## Throughout
 - Re-`survey` before each new area — the board, conventions, and peer scan are live.
 - Liveness refreshes on every command; a session unseen 30 min is reaped and its
@@ -317,7 +342,8 @@ initiator you're the conductor for that mission, not the sole worker.
   it and move on.
 
 ## Command reference
-`enroll` `profile` `survey` `claim` `contest` `release` `delegate` `offers`/`inbox`
+`enroll` `profile` `own`/`owners`/`whoknows`/`ask` `survey` `claim` `contest`
+`release` `delegate` `offers`/`inbox`
 `suggest` `take` `pull` `finish` `drop` `mission` `msg` `landq` `decree`
 `conventions` `propose` `object` `approve` `proposal` `learn` `knowledge` `since`
 `sync` `split` `land` `status`/`board` `watch` `peers` `report` `html` `adopt`

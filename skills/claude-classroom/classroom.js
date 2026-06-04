@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -587,6 +587,7 @@ function renderDashboard(meSid) {
     if (m.expertise && m.expertise.length) meta.push(m.expertise.slice(0, 3).join(', '));
     meta.push('headroom ' + (m.headroom ?? 100) + '%');
     L.push('  ' + bar + '     ' + DIM + trunc(meta.join('  ·  '), W - 8) + RESET);
+    if (m.owns && m.owns.length) L.push('  ' + bar + '     ' + DIM + '⬡ operates: ' + trunc(m.owns.join(', '), W - 18) + RESET);
     const task = (m.task && m.task !== '(auto-enrolled)') ? m.task : 'getting oriented…';
     L.push('  ' + bar + '     ' + col + '“' + trunc(task, W - 12) + '”' + RESET);
     const latest = agentLatest(m.sid);
@@ -856,6 +857,23 @@ function resolveSid(token) {
 }
 
 // fit score of a member for a task (shared by suggest + work-stealing).
+// how strongly a member "owns"/operates a given path or area (0..100).
+function ownerMatch(member, target) {
+  const owns = member.owns || [];
+  if (!owns.length || !target) return 0;
+  const t = String(target).toLowerCase();
+  const tw = new Set(t.match(/[a-z0-9]{3,}/g) || []);
+  let best = 0;
+  for (const z of owns) {
+    const zo = z.toLowerCase().replace(/[*]+$/, '').replace(/\/+$/, '').trim();
+    if (!zo) continue;
+    if (t === zo) best = Math.max(best, 100);
+    else if (t.startsWith(zo + '/') || zo.startsWith(t + '/') || t.startsWith(zo)) best = Math.max(best, 90); // path zone
+    else if (zo.includes('/') && t.includes(zo)) best = Math.max(best, 80);
+    else if ((zo.match(/[a-z0-9]{3,}/g) || []).some((w) => tw.has(w))) best = Math.max(best, 65); // topic
+  }
+  return best;
+}
 function fitScore(member, task) {
   const tok = (s) => (s || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
   const kw = new Set([...tok(task.title), ...tok(task.area)]);
@@ -863,7 +881,10 @@ function fitScore(member, task) {
   let overlap = 0;
   for (const e of exp) for (const k of kw) if (e.includes(k) || k.includes(e)) overlap += 1;
   const head = (member.headroom ?? 100) / 100;
-  return Math.max(0, Math.min(100, Math.round((overlap * 40 + 10) * (0.5 + 0.5 * head))));
+  const base = (overlap * 40 + 10) * (0.5 + 0.5 * head);
+  // owning the area/path is the strongest fit signal — route it to the operator.
+  const own = Math.max(ownerMatch(member, task.area), ownerMatch(member, task.title)) * (0.6 + 0.4 * head);
+  return Math.max(0, Math.min(100, Math.round(Math.max(base, own))));
 }
 
 // hook command string (absolute node + this script) — for install/adopt.
@@ -918,6 +939,8 @@ COMMANDS.enroll = (args) => {
   if (args.task) m.task = args.task;
   if (args.expertise) m.expertise = parseList(args.expertise);
   else if (!m.expertise) m.expertise = [];
+  if (args.owns) m.owns = parseList(args.owns);
+  else if (!m.owns) m.owns = [];
   if (args.headroom !== undefined) m.headroom = clampPct(args.headroom);
   else if (m.headroom === undefined) m.headroom = 100;
   if (args.note) m.contextNote = String(args.note);
@@ -1062,6 +1085,7 @@ COMMANDS.profile = (args) => {
   const m = getMember(sid);
   if (!m) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
   if (args.expertise) m.expertise = parseList(args.expertise);
+  if (args.owns) m.owns = parseList(args.owns);
   if (args.headroom !== undefined) m.headroom = clampPct(args.headroom);
   if (args.note) m.contextNote = String(args.note);
   writeMember(m);
@@ -1219,23 +1243,17 @@ COMMANDS.suggest = (args) => {
   const tasks = allT.filter((t) => (t.status === 'open' && !taskBlocked(t, allT)) || (args.all && t.status === 'taken'));
   if (!members.length) { console.log('No live members to allocate to.'); return; }
   if (!tasks.length) { console.log('No ready tasks to allocate (all done or blocked). Post a backlog with `delegate "<task>" --area <x>`.'); return; }
-  const tok = (s) => (s || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
   const load = new Map(); // soft load-balancing: discourage piling on one session
-  console.log('SUGGESTED ALLOCATION  (fit = expertise overlap, scaled by headroom & current load)');
+  console.log('SUGGESTED ALLOCATION  (ownership > expertise, scaled by headroom & load)');
   for (const t of tasks) {
-    const kw = new Set([...tok(t.title), ...tok(t.area)]);
     const scored = members.map((m) => {
-      const exp = (m.expertise || []).map((e) => e.toLowerCase());
-      let overlap = 0;
-      for (const e of exp) for (const k of kw) if (e.includes(k) || k.includes(e)) overlap += 1;
-      const head = (m.headroom ?? 100) / 100;
-      const loadPenalty = (load.get(m.sid) || 0) * 12;
-      const fit = Math.max(0, Math.min(100, Math.round((overlap * 40 + 10) * (0.5 + 0.5 * head) - loadPenalty)));
-      return { m, overlap, fit };
-    }).sort((a, b) => b.fit - a.fit || b.overlap - a.overlap);
+      const own = Math.max(ownerMatch(m, t.area), ownerMatch(m, t.title));
+      const fit = Math.max(0, Math.round(fitScore(m, t) - (load.get(m.sid) || 0) * 12));
+      return { m, own, fit };
+    }).sort((a, b) => b.own - a.own || b.fit - a.fit);
     const best = scored[0];
     load.set(best.m.sid, (load.get(best.m.sid) || 0) + 1);
-    const why = best.overlap > 0 ? `expertise overlap ${best.overlap}` : 'no expertise match — by free budget';
+    const why = best.own > 0 ? `OWNS this area` : (best.fit > 15 ? 'expertise fit' : 'no match — by free budget');
     console.log(`  [${t.id}] (${t.effort}) ${t.title}`);
     console.log(`      → ${label(best.m)}   fit≈${best.fit}   (${why}, headroom ${best.m.headroom ?? 100}%)`);
     const runners = scored.slice(1, 3).filter((s) => s.fit > 0).map((s) => `${shortId(s.m.sid)}:${s.fit}`).join('  ');
@@ -1920,6 +1938,72 @@ function meshAuto() {
   } catch {}
 }
 
+// ---- codebase ownership / domain operators ----
+COMMANDS.own = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  const m = getMember(sid);
+  if (!m) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  touch(sid);
+  const list = args._.flatMap((z) => parseList(z));
+  if (!list.length) { console.log(`you operate: ${(m.owns || []).join(', ') || '(nothing declared)'}`); return; }
+  m.owns = Array.from(new Set([...(m.owns || []), ...list]));
+  writeMember(m);
+  logEvent(sid, 'owns', `operator of: ${list.join(', ')}`);
+  console.log(`✔ you're now the operator/expert for: ${m.owns.join(', ')}`);
+  console.log('  Teammates route questions & area-tasks here. (`disown <area>` to drop one.)');
+};
+COMMANDS.disown = (args) => {
+  ensureDirs(); const sid = sessionId(args); const m = getMember(sid);
+  if (!m) { console.error('✗ not enrolled.'); process.exit(2); } touch(sid);
+  const list = args._.flatMap((z) => parseList(z)).map((s) => s.toLowerCase());
+  m.owns = (m.owns || []).filter((z) => !list.includes(z.toLowerCase()));
+  writeMember(m);
+  console.log(`✔ now operating: ${(m.owns || []).join(', ') || '(nothing)'}`);
+};
+COMMANDS.owners = (args) => {
+  ensureDirs(); reap();
+  const members = readMembers().filter(isLive);
+  console.log('CODEBASE OPERATORS — who knows/owns what:');
+  let any = false;
+  for (const m of members) if ((m.owns || []).length) { any = true; console.log(`  ${label(m)}  →  ${m.owns.join(', ')}`); }
+  if (!any) console.log('  (nobody has declared ownership yet — use `own "<area or path>"`)');
+};
+COMMANDS.whoknows = (args) => {
+  ensureDirs(); reap();
+  const target = args._.join(' ').trim();
+  if (!target) { console.error('✗ usage: whoknows <area-or-path>'); process.exit(2); }
+  const members = readMembers().filter(isLive);
+  const ranked = members.map((m) => ({ m, own: ownerMatch(m, target), fit: fitScore(m, { title: target, area: target }) }))
+    .filter((x) => x.own > 0 || x.fit > 15).sort((a, b) => b.own - a.own || b.fit - a.fit);
+  if (!ranked.length) { console.log(`No clear operator for "${target}". Ask everyone:  classroom msg all "..."`); return; }
+  console.log(`Best for "${target}":`);
+  for (const x of ranked.slice(0, 3)) console.log(`  ${label(x.m)}  ${x.own ? `— OWNS it (match ${x.own})` : `— expertise fit ${x.fit}`}`);
+  console.log(`  → ask:  classroom ask "${target}" "your question"   ·   delegate:  classroom delegate "<task>" --to ${shortId(ranked[0].m.sid)} --area "${target}"`);
+};
+COMMANDS.ask = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const target = args._[0];
+  const q = args._.slice(1).join(' ').trim() || args.q || '';
+  if (!target || !q) { console.error('✗ usage: ask "<area-or-path>" "<question>"'); process.exit(2); }
+  const members = readMembers().filter((m) => isLive(m) && m.sid !== sid);
+  const ranked = members.map((m) => ({ m, own: ownerMatch(m, target), fit: fitScore(m, { title: target, area: target }) }))
+    .sort((a, b) => b.own - a.own || b.fit - a.fit);
+  const best = ranked[0];
+  if (!best || (best.own === 0 && best.fit <= 15)) {
+    writeMessage({ id: newId('m'), from: sid, to: 'all', text: `❓ [${target}] ${q}`, ts: now() });
+    logEvent(sid, 'ask', `(no owner) ${target}: ${q}`);
+    console.log(`No clear operator for "${target}" — asked the whole team. Replies via: msg ${shortId(sid)} "…".`);
+    return;
+  }
+  writeMessage({ id: newId('m'), from: sid, to: best.m.sid, text: `❓ about ${target}: ${q}`, ts: now() });
+  logEvent(sid, 'ask', `→ ${shortId(best.m.sid)} about ${target}`, { to: best.m.sid });
+  console.log(`✔ asked ${label(best.m)} (${best.own ? 'operator of ' + target : 'best fit'}) — they answer next turn with  msg ${shortId(sid)} "…".`);
+};
+
 COMMANDS.heartbeat = (args) => {
   const sid = sessionId(args);
   touch(sid);
@@ -2124,8 +2208,10 @@ COMMANDS.help = () => {
 
 USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION_ID)
 
-  enroll  [--task ..] [--name ..] [--expertise a,b] [--headroom 0-100]  join; show the board
-  profile [--expertise a,b] [--headroom 0-100] [--note ..]   declare context fit + budget
+  enroll  [--task ..] [--name ..] [--expertise a,b] [--owns area,path] [--headroom 0-100]  join
+  profile [--expertise a,b] [--owns area,path] [--headroom 0-100] [--note ..]   declare fit/budget
+  own "<area/path>..." | disown | owners   declare/list who operates which part of the codebase
+  whoknows <area>  ·  ask "<area>" "<q>"   find the operator of an area · ask them a question
   survey  [<path>...]                     show board + git state; pre-check path conflicts
   claim   <path>... --intent ".." [--confidence 0-100] [--rationale ".."]  lock files (refuses overlap)
   contest <path>... --confidence 0-100 --rationale ".."   challenge a claim; higher confidence wins
