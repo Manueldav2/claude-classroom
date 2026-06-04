@@ -112,6 +112,20 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.2 — peer review + a wildly-better watch
+- **Peer review.** `review "<what>" [--to a] [--branch b]` requests a review,
+  auto-routed to the area's operator (ownerMatch) or a fresh session; `reviews`
+  lists what's waiting on you; `verdict <id> approve|changes|reject --ran "vitest
+  108✓, e2e green" --notes "…"` records the verdict (and **what tests/evals/e2e were
+  run**) and notifies the author. `land` now tells you to run tests/evals/e2e + get
+  an approving verdict before merging. Requests/verdicts ride the message channel,
+  so they show up in `since` and the chatter feed.
+- **Upgraded `watch`.** Animated (braille spinner + pulsing dots + per-agent color
+  dots in the header), `💬` badge on agents pinged in the last 5 min, and a live
+  **CHATTER feed** merging messages + notes — `FROM ─▶ TO  text` for DMs, `FROM 📝
+  text` for notes — persona-colored with timestamps. `renderDashboard(meSid, tick)`;
+  watch passes an incrementing tick.
+
 ## v2.1 — codebase ownership / domain operators
 - A session declares the areas it operates: `own "backend/auth, payments, src/api/**"`
   (or `--owns` on enroll/profile). `owners` lists who runs what; shown on the

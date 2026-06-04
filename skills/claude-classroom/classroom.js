@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.1.1';
+const VERSION = '2.2.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -93,13 +93,14 @@ const DIRS = () => {
     knowledge: path.join(root, 'knowledge'),
     messages: path.join(root, 'messages'),
     missions: path.join(root, 'missions'),
+    reviews: path.join(root, 'reviews'),
     events: path.join(root, 'events.log'),
   };
 };
 
 function ensureDirs() {
   const d = DIRS();
-  for (const k of ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions']) {
+  for (const k of ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions', 'reviews']) {
     fs.mkdirSync(d[k], { recursive: true });
   }
   if (!fs.existsSync(d.events)) fs.writeFileSync(d.events, '');
@@ -552,7 +553,13 @@ function agentLatest(sid) {
   return null;
 }
 
-function renderDashboard(meSid) {
+function quickPersona(sid) {
+  const h = personaHash(sid);
+  return { ...PERSONAS[h % PERSONAS.length], color: PALETTE[h % PALETTE.length] };
+}
+const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+function renderDashboard(meSid, tick = 0) {
   const r = repo();
   const W = Math.max(56, Math.min(process.stdout.columns || 92, 100));
   const members = readMembers().filter(isLive).sort((a, b) => effectiveSeen(b) - effectiveSeen(a));
@@ -560,28 +567,46 @@ function renderDashboard(meSid) {
   let ghosts = [];
   try { ghosts = detectPeers(TTL_MS).filter((g) => g.sid !== meSid && !liveSids.has(g.sid)); } catch {}
   const pmap = assignPersonas([...members.map((m) => m.sid), ...ghosts.map((g) => g.sid)]);
+  const memById = new Map(members.map((m) => [m.sid, m]));
+  const disp = (sid) => {
+    const b = pmap.get(sid) || quickPersona(sid);
+    const m = memById.get(sid);
+    const nm = (m && m.name && m.name.trim()) ? m.name.trim() : b.n;
+    return { emoji: b.e, name: String(nm).toUpperCase(), color: b.color, trait: b.t };
+  };
+  const C = (sid) => fg(disp(sid).color);
+  const msgs = (() => { try { return readMessages(); } catch { return []; } })();
+  const pinged = new Set();
+  for (const mm of msgs) if (now() - mm.ts < 5 * 60 * 1000 && mm.to && mm.to !== 'all') pinged.add(mm.to);
+
   const L = [];
+  const spin = fg(45) + SPIN[tick % SPIN.length] + RESET;
+  const dots = members.map((m) => {
+    const age = now() - effectiveSeen(m);
+    const ch = (age < 180000 && tick % 2) ? '◉' : '●';
+    return fg(disp(m.sid).color) + ch + RESET;
+  }).join('');
   L.push('');
-  L.push('  ' + BOLD + '🎓  CLAUDE CLASSROOM' + RESET + DIM + '   ·   ' + (r.topLevel ? path.basename(r.topLevel) : '—') + RESET
-    + '   ' + BOLD + fg(220) + members.length + (members.length === 1 ? ' agent' : ' agents')
-    + (ghosts.length ? '  +' + ghosts.length + ' detected' : ' live') + RESET);
-  L.push('  ' + DIM + '─'.repeat(W) + RESET);
+  L.push('  ' + spin + '  ' + BOLD + '🎓 CLAUDE CLASSROOM' + RESET + DIM + '  ·  ' + (r.topLevel ? path.basename(r.topLevel) : '—') + RESET
+    + '   ' + BOLD + fg(220) + members.length + (members.length === 1 ? ' agent live' : ' agents live') + RESET
+    + (ghosts.length ? DIM + '  +' + ghosts.length + ' detected' + RESET : '') + '   ' + dots);
+  L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
   if (!members.length) {
     L.push(''); L.push('   ' + DIM + 'nobody in class right now — open a session to begin.' + RESET); L.push('');
   }
   for (const m of members) {
-    const base = pmap.get(m.sid);
-    const p = { emoji: base.e, color: base.color, trait: base.t, name: ((m.name && m.name.trim()) ? m.name.trim() : base.n).toUpperCase() };
+    const p = disp(m.sid);
     const col = fg(p.color);
     const bar = col + '┃' + RESET;
     const seen = effectiveSeen(m);
     const age = now() - seen;
-    const dot = age < 180000 ? fg(82) + '●' + RESET : age < 900000 ? fg(220) + '●' + RESET : DIM + '○' + RESET;
+    const dot = age < 180000 ? (tick % 2 ? fg(46) : fg(82)) + '●' + RESET : age < 900000 ? fg(220) + '●' + RESET : DIM + '○' + RESET;
     const you = m.sid === meSid ? DIM + '  (you)' + RESET : '';
+    const badge = pinged.has(m.sid) ? '  ' + fg(213) + '💬' + RESET : '';
     L.push('  ' + bar);
     L.push('  ' + bar + '  ' + p.emoji + '  ' + col + BOLD + p.name + RESET + ' ' + DIM + p.trait + RESET
       + '  ' + DIM + '· ' + shortId(m.sid) + RESET
-      + '   ' + dot + ' ' + DIM + rel(seen) + RESET + you);
+      + '   ' + dot + ' ' + DIM + rel(seen) + RESET + you + badge);
     const meta = [];
     if (m.branch) meta.push(m.branch);
     if (m.expertise && m.expertise.length) meta.push(m.expertise.slice(0, 3).join(', '));
@@ -597,19 +622,39 @@ function renderDashboard(meSid) {
     L.push('');
     L.push('  ' + DIM + "· · ·  also active here, not enrolled (won't see claims)  · · ·" + RESET);
     for (const g of ghosts) {
-      const gb = pmap.get(g.sid);
-      const gp = { emoji: gb.e, name: gb.n.toUpperCase() };
+      const gp = disp(g.sid);
       L.push('  ' + DIM + '┃  ' + gp.emoji + '  ' + gp.name + '  · ' + shortId(g.sid)
         + '   ○ ' + rel(g.mtimeMs) + '   — run /claude-classroom to join' + RESET);
     }
   }
+  // ── live chatter: who passed notes / sent messages ──
+  let notes = [];
+  try { notes = allEvents().filter((e) => e.kind === 'note'); } catch {}
+  const feed = [
+    ...msgs.map((mm) => ({ ts: mm.ts, from: mm.from, to: mm.to, text: mm.text, kind: 'msg' })),
+    ...notes.map((e) => ({ ts: e.ts, from: e.sid, to: null, text: e.msg, kind: 'note' })),
+  ].sort((a, b) => a.ts - b.ts).slice(-7);
   L.push('');
-  L.push('  ' + DIM + '─'.repeat(W) + RESET);
+  L.push('  ' + fg(213) + '💬 CHATTER' + RESET + DIM + '   notes & messages flying around' + RESET);
+  if (!feed.length) L.push('   ' + DIM + '(quiet so far — no notes or messages)' + RESET);
+  for (const f of feed) {
+    const from = disp(f.from);
+    const head = C(f.from) + from.emoji + ' ' + BOLD + from.name + RESET;
+    if (f.kind === 'msg') {
+      const to = f.to === 'all' ? fg(220) + 'everyone' + RESET : C(f.to) + disp(f.to).name + RESET;
+      L.push('   ' + head + ' ' + fg(244) + '─▶' + RESET + ' ' + to + DIM + '  ' + trunc(f.text, W - 28) + RESET + DIM + '  ' + rel(f.ts) + RESET);
+    } else {
+      L.push('   ' + head + ' ' + DIM + '📝 ' + trunc(f.text, W - 22) + '  ' + rel(f.ts) + RESET);
+    }
+  }
+  L.push('');
+  L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
   const convs = readDecisions();
   const foot = [];
   if (convs.length) foot.push(fg(220) + '📐 ' + convs.length + (convs.length === 1 ? ' rule' : ' rules') + RESET);
   const claims = readClaims().filter((c) => members.some((m) => m.sid === c.sid)).length;
   if (claims) foot.push(fg(203) + '🔒 ' + claims + ' held' + RESET);
+  if (msgs.length) foot.push(fg(213) + '💬 ' + msgs.length + RESET);
   foot.push(DIM + '⌃C to exit' + RESET);
   L.push('  ' + foot.join(DIM + '   ·   ' + RESET));
   L.push('');
@@ -840,6 +885,14 @@ function readMessages() {
 }
 function writeMessage(m) { const d = ensureDirs(); atomicWrite(path.join(d.messages, m.id + '.json'), JSON.stringify(m, null, 2)); return m; }
 function writeMission(x) { const d = ensureDirs(); atomicWrite(path.join(d.missions, x.id + '.json'), JSON.stringify(x, null, 2)); return x; }
+function readReviews() {
+  const d = DIRS();
+  let files = [];
+  try { files = fs.readdirSync(d.reviews).filter((f) => f.endsWith('.json')); } catch { return []; }
+  return files.map((f) => readJSON(path.join(d.reviews, f))).filter(Boolean).sort((a, b) => a.createdAt - b.createdAt);
+}
+function writeReview(x) { const d = ensureDirs(); atomicWrite(path.join(d.reviews, x.id + '.json'), JSON.stringify(x, null, 2)); return x; }
+function getReview(id) { const all = readReviews(); return all.find((x) => x.id === id) || all.find((x) => x.id.startsWith(id)) || null; }
 
 // resolve a token (sid, short id, or persona/display name) to a live member's sid.
 function resolveSid(token) {
@@ -1521,15 +1574,16 @@ COMMANDS.watch = (args) => {
   ensureDirs();
   const sid = sessionId(args);
   const interval = Math.max(1, (args.interval ? parseInt(args.interval, 10) : 3)) * 1000;
-  const view = () => (args.plain ? renderBoard(sid) : renderDashboard(sid));
-  if (args.once) { reap(); process.stdout.write(view() + '\n'); return; }
+  const view = (t) => (args.plain ? renderBoard(sid) : renderDashboard(sid, t));
+  if (args.once) { reap(); process.stdout.write(view(args.tick ? parseInt(args.tick, 10) : 0) + '\n'); return; }
   // alternate screen + hidden cursor = a clean full-screen TUI with no
   // scrollback pollution (fixes the "rendered twice" stacking).
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   const cleanup = () => { try { process.stdout.write('\x1b[?25h\x1b[?1049l'); } catch {} process.exit(0); };
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
-  const draw = () => { reap(); process.stdout.write('\x1b[H\x1b[2J' + view()); };
+  let tick = 0;
+  const draw = () => { reap(); process.stdout.write('\x1b[H\x1b[2J' + view(tick++)); };
   draw();
   setInterval(draw, interval);
 };
@@ -2010,6 +2064,74 @@ COMMANDS.ask = (args) => {
   console.log(`✔ asked ${label(best.m)} (${best.own ? 'operator of ' + target : 'best fit'}) — they answer next turn with  msg ${shortId(sid)} "…".`);
 };
 
+// ---- peer review: get your work checked before it lands ----
+COMMANDS.review = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const what = args._.join(' ').trim() || args.what || '';
+  if (!what) { console.error('✗ usage: review "<what to review>" [--to <agent>] [--branch <b>] [--area <x>]'); process.exit(2); }
+  const branch = args.branch || (repo().branch || null);
+  // pick a reviewer: explicit --to, else the operator of the area, else any other live session.
+  const others = readMembers().filter((m) => isLive(m) && m.sid !== sid);
+  let reviewer = args.to ? resolveSid(args.to) : null;
+  if (!reviewer) {
+    const area = args.area || what;
+    const ranked = others.map((m) => ({ m, own: ownerMatch(m, area), fit: fitScore(m, { title: what, area }) }))
+      .sort((a, b) => b.own - a.own || b.fit - a.fit);
+    reviewer = ranked.length ? ranked[0].m.sid : null;
+  }
+  const x = {
+    id: newId('r'), by: sid, what, branch, area: args.area || null,
+    to: reviewer, status: 'requested', notes: null, ran: null, createdAt: now(),
+  };
+  writeReview(x);
+  const toTxt = reviewer ? shortId(reviewer) : 'anyone';
+  if (reviewer) writeMessage({ id: newId('m'), from: sid, to: reviewer, text: `🔎 please REVIEW [${x.id}]: ${what}${branch ? ' (branch ' + branch + ')' : ''} — run the tests/evals/e2e and post a verdict`, ts: now() });
+  else writeMessage({ id: newId('m'), from: sid, to: 'all', text: `🔎 REVIEW WANTED [${x.id}]: ${what} — anyone free to check it?`, ts: now() });
+  logEvent(sid, 'review-req', `[${x.id}] ${what} → ${toTxt}`, { to: reviewer });
+  console.log(`✔ review [${x.id}] requested from ${reviewer ? label(getMember(reviewer)) : 'the team'}.`);
+  console.log(`  They should: read the diff, RUN tests/evals/e2e, then  classroom verdict ${x.id} approve|changes|reject --ran "..." --notes "..."`);
+};
+
+COMMANDS.reviews = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  const all = readReviews();
+  const forMe = all.filter((x) => x.status === 'requested' && (x.to === sid || (!x.to)));
+  const mine = all.filter((x) => x.by === sid);
+  console.log(`REVIEWS for you to do (${forMe.length}):`);
+  if (!forMe.length) console.log('  (none)');
+  for (const x of forMe) console.log(`  🔎 [${x.id}] from ${shortId(x.by)}: ${x.what}${x.branch ? '  (branch ' + x.branch + ')' : ''}`);
+  console.log(`YOUR review requests (${mine.length}):`);
+  for (const x of mine) console.log(`  [${x.id}] ${x.what} — ${x.status === 'requested' ? 'awaiting ' + (x.to ? shortId(x.to) : 'anyone') : x.status.toUpperCase() + (x.ran ? ' · ran: ' + x.ran : '')}${x.notes ? ' — ' + x.notes : ''}`);
+  if (forMe.length) console.log('  → verdict: read the diff, RUN tests/evals/e2e, then  classroom verdict <id> approve|changes|reject --ran "..." --notes "..."');
+};
+
+COMMANDS.verdict = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const id = args._[0] || args.id;
+  const decision = (args._[1] || args.decision || '').toLowerCase();
+  if (!id || !['approve', 'changes', 'reject', 'approved', 'pass'].includes(decision)) {
+    console.error('✗ usage: verdict <reviewId> <approve|changes|reject> [--ran "tests/evals/e2e you ran"] [--notes "..."]'); process.exit(2);
+  }
+  const x = getReview(id);
+  if (!x) { console.error('✗ no such review'); process.exit(1); }
+  const status = (decision === 'approve' || decision === 'approved' || decision === 'pass') ? 'approved' : (decision === 'reject' ? 'rejected' : 'changes');
+  const ran = args.ran || '';
+  const notes = args.notes || args._.slice(2).join(' ') || '';
+  if (!ran && status === 'approved') console.log('⚠ approving without --ran: please actually run the tests/evals/e2e and record them.');
+  writeReview({ ...x, status, ran, notes, verdictBy: sid, verdictAt: now() });
+  const icon = status === 'approved' ? '✅' : status === 'rejected' ? '⛔' : '🔧';
+  writeMessage({ id: newId('m'), from: sid, to: x.by, text: `${icon} REVIEW ${status.toUpperCase()} [${x.id}]: ${x.what}${ran ? ' · ran: ' + ran : ''}${notes ? ' — ' + notes : ''}`, ts: now() });
+  logEvent(sid, 'verdict', `${status} [${x.id}]${ran ? ' (ran ' + ran + ')' : ''}`, { to: x.by });
+  console.log(`✔ verdict recorded: ${status}. ${shortId(x.by)} notified.`);
+};
+
 COMMANDS.heartbeat = (args) => {
   const sid = sessionId(args);
   touch(sid);
@@ -2105,16 +2227,17 @@ COMMANDS.land = (args) => {
   console.log('RECOMMENDED SEQUENCE (run with judgment, verify tests/build pass):');
   const steps = [];
   if (dirty) steps.push('commit your atomic change(s) first');
+  steps.push(`RUN the project tests + evals + e2e (pnpm test / npm test / your eval + e2e suites) — do NOT land red`);
+  steps.push(`get a PEER REVIEW:  classroom review "<this change>" --branch ${branch}  (routes to the area's operator)`);
   if (hasRemote) steps.push('git fetch origin');
   steps.push(`git rebase ${hasRemote ? 'origin/' + target : target}     # replay your commits on latest ${target}`);
-  steps.push('run the project build/tests');
-  steps.push(`switch to the ${target} checkout and:  git merge --ff-only ${branch}`);
+  steps.push(`only after an ✅ approving verdict: switch to ${target} and  git merge --ff-only ${branch}`);
   if (hasRemote) steps.push(`git push origin ${target}`);
   steps.push('classroom release   &&   classroom done');
   steps.forEach((s, i) => console.log(`  ${i + 1}. ${s}`));
   console.log('');
-  console.log('Direct-to-main is OK only for a small, atomic, conflict-free change after rebase.');
-  console.log('Otherwise open a PR for review.');
+  console.log('Direct-to-main is OK only for a small, atomic, conflict-free change that passed tests AND review.');
+  console.log('Otherwise open a PR. Reviewers: actually RUN the tests/evals/e2e and report what you ran in the verdict.');
 };
 
 COMMANDS.done = (args) => {
@@ -2235,6 +2358,8 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   proposal <id>                           check a proposal's status before you commit
   withdraw <id> [--committed]             close your proposal
   mission "<goal>"                        broadcast a group goal; then partition it across teammates
+  review "<what>" [--to a] [--branch b]   request peer review (routes to the area operator)
+  reviews  ·  verdict <id> approve|changes|reject [--ran ".."] [--notes ".."]   do/answer reviews
   msg     <@agent|all> "<text>"           direct message another session (seen next turn)
   pull                                    work-steal: take the best-fit unblocked task for you
   landq [release|status]                  serialize landing to main (one session lands at a time)

@@ -270,10 +270,11 @@ Less context re-derived per session = more parallel throughput.
 - Post dependent work with `delegate "<task>" --blocked-by <id>`. Blocked tasks
   are hidden from `suggest`/can't be `take`n until their dependency `finish`es,
   then they auto-unblock. Keeps the crew on the critical path.
-- **`classroom watch`** — a live, refreshing dashboard of the whole crew
-  (sessions, claims, tasks, proposals, conventions). Run it in a spare terminal
-  pane to keep an eye on everything at once. (Long form:
-  `node ~/.claude/skills/claude-classroom/classroom.js watch`.)
+- **`classroom watch`** — a live, animated dashboard of the whole crew: each agent
+  as a colored persona with what they operate + are doing, `💬` badges on whoever
+  was just pinged, and a **CHATTER feed** of the notes and messages flying between
+  sessions (who told whom what). Run it in a spare terminal to watch it all happen.
+  (Long form: `node ~/.claude/skills/claude-classroom/classroom.js watch`.)
 
 ## §H. Group missions — "you all work on this together"
 When the user says something like *"I want you guys to work on this as a group / as
@@ -334,6 +335,24 @@ Then the crew routes by ownership:
 This is how the crew works *efficiently*: the deep-context operator handles (or
 answers about) its area; everyone else delegates into it instead of relearning it.
 
+## §L. Check each other's work — peer review + verification
+**Nothing lands unreviewed.** Before you `land` (especially for anything shared,
+risky, or in someone else's zone):
+1. **Run the checks yourself first** — tests, **evals**, and **e2e**, as much as the
+   repo supports (`pnpm test`/`npm test`, the eval suite, the e2e suite). Never
+   land red.
+2. **Request a peer review**, auto-routed to the operator of that area (or a fresh
+   session): `classroom review "<what changed>" --branch <b>` (`--to <agent>` to pick).
+3. The reviewer **reads the diff, actually RUNS the tests/evals/e2e**, and posts a
+   verdict recording what they ran:
+   `classroom verdict <id> approve|changes|reject --ran "vitest 108✓, e2e green" --notes "…"`
+4. **Land only after an ✅ approving verdict.** `classroom reviews` shows what's
+   waiting on you and the status of yours; verdicts arrive on the requester's next turn.
+
+When you have spare budget, proactively offer to review: take an open review or
+`msg` a teammate *"want me to test/review your branch?"* Work gets done faster **and
+more correctly** when every change is checked + verified by someone who didn't write it.
+
 ## Throughout
 - Re-`survey` before each new area — the board, conventions, and peer scan are live.
 - Liveness refreshes on every command; a session unseen 30 min is reaped and its
@@ -344,7 +363,8 @@ answers about) its area; everyone else delegates into it instead of relearning i
 ## Command reference
 `enroll` `profile` `own`/`owners`/`whoknows`/`ask` `survey` `claim` `contest`
 `release` `delegate` `offers`/`inbox`
-`suggest` `take` `pull` `finish` `drop` `mission` `msg` `landq` `decree`
+`suggest` `take` `pull` `finish` `drop` `mission` `review`/`reviews`/`verdict` `msg`
+`landq` `decree`
 `conventions` `propose` `object` `approve` `proposal` `learn` `knowledge` `since`
 `sync` `split` `land` `status`/`board` `watch` `peers` `report` `html` `adopt`
 `mesh` `install`/`uninstall` `heartbeat` `done`/`leave` `reap` `whoami` `doctor`.

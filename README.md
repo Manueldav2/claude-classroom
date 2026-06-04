@@ -75,6 +75,9 @@ On top of that:
 - **Codebase ownership** — `own "backend/auth, payments"` declares the areas you
   operate; `whoknows <area>` finds the operator and `ask "<area>" "<q>"` routes a
   question to them. `suggest` ranks ownership above generic expertise.
+- **Peer review + verification** — `review "<change>"` routes to the area's
+  operator; the reviewer **runs the tests/evals/e2e** and posts a `verdict`
+  (recording what they ran); you land only on an ✅. Nothing ships unchecked.
 - **Direct messaging** — `msg @agent "…"` between sessions, seen next turn.
 - **Cross‑machine** — `mesh on` syncs the board over a shared git branch, so
   teammates' agents on other machines coordinate too (claims and all).
