@@ -68,7 +68,16 @@ On top of that:
   higher confidence wins, ties keep the incumbent. Calm, not territorial.
 - **Delegation + backlog** — `delegate` work you shouldn't burn your context on;
   `suggest` recommends who's best equipped (expertise × headroom); `take` it
-  (better fit can take over).
+  (better fit can take over). `pull` work‑steals the best‑fit task.
+- **Group missions** — tell one session *"work on this as a group"* and it runs
+  `mission`, partitions the goal, and assigns each piece to the best‑fit teammate
+  (taking its own share) — assignees are notified at their next turn.
+- **Codebase ownership** — `own "backend/auth, payments"` declares the areas you
+  operate; `whoknows <area>` finds the operator and `ask "<area>" "<q>"` routes a
+  question to them. `suggest` ranks ownership above generic expertise.
+- **Direct messaging** — `msg @agent "…"` between sessions, seen next turn.
+- **Cross‑machine** — `mesh on` syncs the board over a shared git branch, so
+  teammates' agents on other machines coordinate too (claims and all).
 - **Team conventions** — `decree "always use X"` shows atop every session's board
   so a rule told to one reaches all; commits that look like they violate one get
   flagged.
