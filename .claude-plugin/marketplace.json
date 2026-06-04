@@ -1,0 +1,16 @@
+{
+  "name": "claude-classroom",
+  "owner": { "name": "Manuel David" },
+  "description": "Claude Classroom — make many Claude Code sessions work as one coordinated team.",
+  "plugins": [
+    {
+      "name": "claude-classroom",
+      "source": "./",
+      "displayName": "Claude Classroom",
+      "description": "Coordinate multiple Claude Code sessions on one repo: shared board, file claims, negotiation, delegation, auto-enroll hooks, pre-commit guard, live dashboard.",
+      "author": { "name": "Manuel David" },
+      "homepage": "https://github.com/Manueldav2/claude-classroom",
+      "repository": "https://github.com/Manueldav2/claude-classroom"
+    }
+  ]
+}
