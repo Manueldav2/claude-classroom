@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '1.6.0';
+const VERSION = '2.0.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -91,18 +91,17 @@ const DIRS = () => {
     proposals: path.join(root, 'proposals'),
     decisions: path.join(root, 'decisions'),
     knowledge: path.join(root, 'knowledge'),
+    messages: path.join(root, 'messages'),
+    missions: path.join(root, 'missions'),
     events: path.join(root, 'events.log'),
   };
 };
 
 function ensureDirs() {
   const d = DIRS();
-  fs.mkdirSync(d.members, { recursive: true });
-  fs.mkdirSync(d.claims, { recursive: true });
-  fs.mkdirSync(d.tasks, { recursive: true });
-  fs.mkdirSync(d.proposals, { recursive: true });
-  fs.mkdirSync(d.decisions, { recursive: true });
-  fs.mkdirSync(d.knowledge, { recursive: true });
+  for (const k of ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions']) {
+    fs.mkdirSync(d[k], { recursive: true });
+  }
   if (!fs.existsSync(d.events)) fs.writeFileSync(d.events, '');
   return d;
 }
@@ -830,6 +829,72 @@ function printPeerBanner(meSid) {
 }
 
 // ---------------------------------------------------------------------------
+// messages, missions, recipient resolution
+// ---------------------------------------------------------------------------
+function readMessages() {
+  const d = DIRS();
+  let files = [];
+  try { files = fs.readdirSync(d.messages).filter((f) => f.endsWith('.json')); } catch { return []; }
+  return files.map((f) => readJSON(path.join(d.messages, f))).filter(Boolean).sort((a, b) => a.ts - b.ts);
+}
+function writeMessage(m) { const d = ensureDirs(); atomicWrite(path.join(d.messages, m.id + '.json'), JSON.stringify(m, null, 2)); return m; }
+function writeMission(x) { const d = ensureDirs(); atomicWrite(path.join(d.missions, x.id + '.json'), JSON.stringify(x, null, 2)); return x; }
+
+// resolve a token (sid, short id, or persona/display name) to a live member's sid.
+function resolveSid(token) {
+  if (!token) return null;
+  const t = String(token).toLowerCase();
+  if (['all', 'everyone', 'team', '*'].includes(t)) return 'all';
+  const members = readMembers().filter(isLive);
+  const pmap = assignPersonas(members.map((m) => m.sid));
+  for (const m of members) {
+    if (m.sid === token || m.sid.startsWith(token) || shortId(m.sid) === token) return m.sid;
+    const nm = ((m.name && m.name.trim()) ? m.name.trim() : pmap.get(m.sid).n).toLowerCase();
+    if (nm === t.replace(/^@/, '')) return m.sid;
+  }
+  return null;
+}
+
+// fit score of a member for a task (shared by suggest + work-stealing).
+function fitScore(member, task) {
+  const tok = (s) => (s || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+  const kw = new Set([...tok(task.title), ...tok(task.area)]);
+  const exp = (member.expertise || []).map((e) => e.toLowerCase());
+  let overlap = 0;
+  for (const e of exp) for (const k of kw) if (e.includes(k) || k.includes(e)) overlap += 1;
+  const head = (member.headroom ?? 100) / 100;
+  return Math.max(0, Math.min(100, Math.round((overlap * 40 + 10) * (0.5 + 0.5 * head))));
+}
+
+// hook command string (absolute node + this script) — for install/adopt.
+function hookCmd(sub) {
+  return `${JSON.stringify(process.execPath)} ${JSON.stringify(__filename)} ${sub}`;
+}
+
+// xterm-256 -> hex, and ANSI -> HTML (for the browser dashboard export).
+function xtermHex(n) {
+  const b = ['#000000','#cd3131','#0dbc79','#e5e510','#2472c8','#bc3fbc','#11a8cd','#e5e5e5','#666666','#f14c4c','#23d18b','#f5f543','#3b8eea','#d670d6','#29b8db','#ffffff'];
+  if (n < 16) return b[n];
+  if (n >= 232) { const v = 8 + (n - 232) * 10; return '#' + v.toString(16).padStart(2, '0').repeat(3); }
+  n -= 16; const lv = [0,95,135,175,215,255];
+  return '#' + [lv[Math.floor(n/36)%6], lv[Math.floor(n/6)%6], lv[n%6]].map((x) => x.toString(16).padStart(2,'0')).join('');
+}
+function ansiToHtml(text) {
+  const escp = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let html = '';
+  for (const line of text.replace(/\r/g,'').split('\n')) {
+    let fg = null, bold = false, dim = false, buf = '';
+    const flush = () => { if (!buf) return; const c = fg || (dim ? '#7d8590' : '#c9d1d9'); html += `<span style="color:${c};${bold?'font-weight:700':''}">${escp(buf)}</span>`; buf = ''; };
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '\x1b' && line[i+1] === '[') { const m = line.slice(i).match(/^\x1b\[([0-9;]*)m/); if (m) { flush(); const cs = m[1].split(';').map(Number); for (let k=0;k<cs.length;k++){const x=cs[k]; if(x===0){fg=null;bold=false;dim=false;}else if(x===1)bold=true;else if(x===2)dim=true;else if(x===22){bold=false;dim=false;}else if(x===39)fg=null;else if(x===38&&cs[k+1]===5){fg=xtermHex(cs[k+2]);k+=2;}} i+=m[0].length-1; continue; } }
+      buf += line[i];
+    }
+    flush(); html += '\n';
+  }
+  return `<!doctype html><meta charset="utf8"><title>Claude Classroom</title><style>body{margin:0;background:#010409;padding:24px}pre{margin:0;font:15px/1.5 ui-monospace,Menlo,monospace;background:#0d1117;border:1px solid #21262d;border-radius:12px;padding:16px 20px;color:#c9d1d9;white-space:pre;display:inline-block}</style><pre>${html}</pre>`;
+}
+
+// ---------------------------------------------------------------------------
 // commands
 // ---------------------------------------------------------------------------
 const COMMANDS = {};
@@ -873,6 +938,7 @@ COMMANDS.enroll = (args) => {
   }
   console.log(`👀 Watch the live dashboard anytime:  ${watchCmd()}`);
   printPeerBanner(sid);
+  meshAuto();
 };
 
 COMMANDS.survey = (args) => {
@@ -1068,12 +1134,14 @@ COMMANDS.delegate = (args) => {
   if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
   touch(sid);
   const title = args._.join(' ').trim() || args.title || '';
-  if (!title) { console.error('✗ usage: delegate "<task>" [--reason "why offloading"] [--area x] [--effort low|med|high] [--to <sid>]'); process.exit(2); }
+  if (!title) { console.error('✗ usage: delegate "<task>" [--reason "why"] [--area x] [--effort low|med|high] [--to <sid>] [--mission <id>] [--after-commit]'); process.exit(2); }
   const blockedBy = args['blocked-by'] ? parseList(args['blocked-by']) : [];
+  const to = args.to ? (resolveSid(args.to) || args.to) : null;
   const t = {
     id: newTaskId(), title, area: args.area || null, reason: args.reason || '',
-    effort: args.effort || 'low', to: args.to || null, createdBy: sid,
-    status: 'open', takenBy: null, rationale: null, blockedBy, createdAt: now(),
+    effort: args.effort || 'low', to, createdBy: sid,
+    status: 'open', takenBy: null, rationale: null, blockedBy,
+    mission: args.mission || null, afterCommit: !!args['after-commit'], createdAt: now(),
   };
   writeTask(t);
   logEvent(sid, 'delegated', `[${t.id}] ${title}${t.reason ? ' — ' + t.reason : ''}${blockedBy.length ? ' (blocked by ' + blockedBy.join(',') + ')' : ''}`, { task: t.id });
@@ -1410,8 +1478,18 @@ COMMANDS.since = (args) => {
       hit = `▸ task unblocked: ${e.msg}`;
     } else if (e.kind === 'proposed') {
       hit = `❓ ${shortId(e.sid)} proposes (object if you see a problem): ${e.msg}`;
+    } else if (e.kind === 'mission') {
+      hit = `📣 MISSION from ${shortId(e.sid)}: ${e.msg} — expect an assignment`;
+    } else if (e.kind === 'delegated' && e.task && tasks.get(e.task)?.to === sid) {
+      const t = tasks.get(e.task);
+      hit = `📌 ASSIGNED to you: "${t.title}" [${t.id}]${t.afterCommit ? ' — start after your current commit' : ''}  → take ${t.id}`;
     }
     if (hit) relevant.push(hit);
+  }
+  // direct messages addressed to me (or everyone)
+  for (const msg of readMessages()) {
+    if (msg.ts <= sinceTs || msg.from === sid) continue;
+    if (msg.to === sid || msg.to === 'all') relevant.push(`💬 from ${shortId(msg.from)}: ${msg.text}`);
   }
   me.lastEventSeen = now();
   writeMember(me);
@@ -1610,9 +1688,242 @@ COMMANDS.uninstall = (args) => {
   console.log('✔ Claude Classroom hooks uninstalled (auto-enroll, notifications, pre-commit guard removed).');
 };
 
+// ---- direct inter-agent messaging ----
+COMMANDS.msg = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const toTok = args._[0] || args.to;
+  const text = (args.to ? args._.join(' ') : args._.slice(1).join(' ')).trim() || args.text || '';
+  if (!toTok || !text) { console.error('✗ usage: msg <@agent|sid|all> "message"'); process.exit(2); }
+  const to = resolveSid(toTok);
+  if (!to) { console.error(`✗ no live agent matches "${toTok}". Run \`status\` to see names.`); process.exit(1); }
+  const m = { id: newId('m'), from: sid, to, text, ts: now() };
+  writeMessage(m);
+  logEvent(sid, 'msg', `→ ${to === 'all' ? 'everyone' : shortId(to)}: ${text}`, { to });
+  console.log(`✔ message sent to ${to === 'all' ? 'everyone' : shortId(to)} — they'll see it next turn.`);
+};
+
+// ---- work-stealing: grab the best-fit unblocked task for me ----
+COMMANDS.pull = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  const me = getMember(sid);
+  if (!me) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const all = readTasks();
+  const open = all.filter((t) => t.status === 'open' && !taskBlocked(t, all) && (!t.to || t.to === sid));
+  if (!open.length) { console.log('No ready tasks to pull. The backlog is clear.'); return; }
+  const best = open.map((t) => ({ t, fit: fitScore(me, t) })).sort((a, b) => b.fit - a.fit)[0];
+  console.log(`work-stealing best-fit task (fit ${best.fit}):`);
+  COMMANDS.take({ ...args, _: [best.t.id], fit: best.fit, rationale: 'work-steal: best-fit available task' });
+};
+
+// ---- land queue: serialize landing to main so branches don't race ----
+COMMANDS.landq = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const d = DIRS();
+  const lockDir = path.join(d.root, 'land.lock');
+  const sub = args._[0] || 'acquire';
+  if (sub === 'release') {
+    const meta = readJSON(path.join(lockDir, 'meta.json'));
+    if (meta && meta.sid === sid) { try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {} logEvent(sid, 'land-release', 'released the land queue'); console.log('✔ released the land lock — next session can land.'); }
+    else console.log('you do not hold the land lock.');
+    return;
+  }
+  if (sub === 'status') {
+    const meta = readJSON(path.join(lockDir, 'meta.json'));
+    console.log(meta ? `land lock held by ${shortId(meta.sid)} since ${rel(meta.ts)}` : 'land lock is FREE.');
+    return;
+  }
+  // acquire (steal if stale > 10 min)
+  let held = false;
+  try { fs.mkdirSync(lockDir); held = true; } catch {
+    const meta = readJSON(path.join(lockDir, 'meta.json'));
+    if (meta && meta.sid === sid) held = true;
+    else if (meta && now() - meta.ts > 10 * 60 * 1000) { try { fs.rmSync(lockDir, { recursive: true, force: true }); fs.mkdirSync(lockDir); held = true; } catch {} }
+    else { console.log(`⏳ land queue BUSY — ${meta ? shortId(meta.sid) : 'someone'} is landing (since ${meta ? rel(meta.ts) : '?'}). Wait, then \`landq\` again.`); process.exit(1); }
+  }
+  atomicWrite(path.join(lockDir, 'meta.json'), JSON.stringify({ sid, ts: now() }, null, 2));
+  logEvent(sid, 'land-acquire', 'holds the land queue');
+  console.log('✔ you hold the land lock — you are clear to land. Sequence:');
+  COMMANDS.land(args);
+  console.log('When merged & pushed:  classroom landq release');
+};
+
+// ---- group mission: broadcast a goal for the crew to split up ----
+COMMANDS.mission = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const goal = args._.join(' ').trim() || args.goal || '';
+  if (!goal) { console.error('✗ usage: mission "<what the whole crew should accomplish together>"'); process.exit(2); }
+  const x = { id: newId('M'), by: sid, goal, ts: now() };
+  writeMission(x);
+  const team = readMembers().filter((m) => isLive(m) && m.sid !== sid);
+  writeMessage({ id: newId('m'), from: sid, to: 'all', text: `📣 MISSION [${x.id}]: ${goal} — splitting into pieces now; watch for your assignment.`, ts: now() });
+  logEvent(sid, 'mission', `[${x.id}] ${goal}`, { mission: x.id });
+  console.log(`✔ mission [${x.id}] broadcast to ${team.length} teammate(s).`);
+  console.log('NOW partition it: break the goal into pieces and assign each to the best-fit teammate, e.g.');
+  for (const m of team) console.log(`    classroom delegate "<piece for ${shortId(m.sid)}>" --to ${shortId(m.sid)} --mission ${x.id} --after-commit --area "<keywords>"`);
+  console.log('  Take YOUR share too — don\'t do it all. Use `suggest` to match pieces to expertise.');
+};
+
+// ---- post-session report ----
+COMMANDS.report = (args) => {
+  ensureDirs();
+  const ev = allEvents();
+  const members = readMembers();
+  const nameOf = (sid) => { const m = members.find((x) => x.sid === sid); return (m && m.name) ? m.name : shortId(sid); };
+  const bySid = {};
+  for (const e of ev) (bySid[e.sid] = bySid[e.sid] || []).push(e);
+  const L = [];
+  L.push('# Claude Classroom — run report');
+  L.push(`Repo: ${repo().topLevel || process.cwd()}`);
+  L.push('');
+  L.push('## Who did what');
+  for (const sid of Object.keys(bySid)) {
+    const evs = bySid[sid];
+    const c = (k) => evs.filter((e) => e.kind === k).length;
+    const last = evs[evs.length - 1];
+    L.push(`- **${nameOf(sid)}** (${shortId(sid)}) — ${c('claimed')} claim(s), ${c('finished')} task(s) done, ${c('contest-won')} contest win(s), ${c('note')} note(s). Last: ${last.kind} "${(last.msg || '').slice(0, 60)}"`);
+  }
+  const ds = readDecisions(); if (ds.length) { L.push(''); L.push('## Conventions set'); for (const d of ds) L.push(`- ${d.text}`); }
+  const kb = readKnowledge(); if (kb.length) { L.push(''); L.push('## Knowledge captured'); for (const k of kb) L.push(`- ${k.text}`); }
+  L.push(''); L.push('## Timeline');
+  const t0 = ev.length ? ev[0].ts : 0;
+  for (const e of ev) L.push(`- +${((e.ts - t0) / 60000).toFixed(1)}m  ${nameOf(e.sid)}  **${e.kind}**  ${(e.msg || '').slice(0, 80)}`);
+  const out = L.join('\n') + '\n';
+  if (args.out) { fs.writeFileSync(args.out, out); console.log('✔ wrote ' + args.out); } else process.stdout.write(out);
+};
+
+// ---- browser dashboard export ----
+COMMANDS.html = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  const html = ansiToHtml(renderDashboard(sid));
+  const out = args.out || path.join(os.tmpdir(), 'classroom-board.html');
+  fs.writeFileSync(out, html);
+  console.log(`✔ wrote ${out}  —  open it:  open "${out}"`);
+};
+
+// ---- interop: adopt every worktree so tool-spawned agents auto-enroll ----
+COMMANDS.adopt = (args) => {
+  const r = repo();
+  if (!r.isGit) { console.error('✗ not a git repo.'); process.exit(2); }
+  const wt = git(['worktree', 'list', '--porcelain']) || '';
+  const paths = [];
+  for (const line of wt.split('\n')) if (line.startsWith('worktree ')) paths.push(line.slice('worktree '.length).trim());
+  if (!paths.length) paths.push(r.topLevel);
+  let n = 0;
+  for (const p of paths) {
+    const sf = path.join(p, '.claude', 'settings.local.json');
+    try {
+      fs.mkdirSync(path.dirname(sf), { recursive: true });
+      let s = {};
+      if (fs.existsSync(sf)) { try { s = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch {} }
+      s.hooks = s.hooks || {};
+      const add = (ev, sub) => { s.hooks[ev] = s.hooks[ev] || []; if (!JSON.stringify(s.hooks[ev]).includes('classroom.js')) s.hooks[ev].push({ hooks: [{ type: 'command', command: hookCmd(sub) }] }); };
+      add('SessionStart', 'hook-session-start');
+      add('UserPromptSubmit', 'hook-user-prompt');
+      fs.writeFileSync(sf, JSON.stringify(s, null, 2));
+      n++;
+    } catch {}
+  }
+  console.log(`✔ adopted ${n} worktree(s) — any session opened in them auto-enrolls.`);
+  console.log('  Covers agents spawned by Claude Squad / Crystal / Conductor (they create worktrees off this repo).');
+};
+
+// ---- cross-machine board over a shared git branch ----
+const MESH_BRANCH = 'claude-classroom-board';
+const MESH_DIRS = ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions'];
+function tsOf(file) { try { const o = JSON.parse(fs.readFileSync(file, 'utf8')); return o.lastSeen || o.updatedAt || o.ts || o.createdAt || 0; } catch { return 0; } }
+function copyNewer(src, dst) {
+  try {
+    if (!fs.existsSync(dst)) { fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst); return true; }
+    if (tsOf(src) > tsOf(dst)) { fs.copyFileSync(src, dst); return true; }
+  } catch {}
+  return false;
+}
+function listBoardFiles(root) {
+  const out = [];
+  const walk = (rel) => {
+    let entries; try { entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = rel + '/' + e.name;
+      if (e.isDirectory()) walk(r);          // claims are nested: claims/<hash>/meta.json
+      else if (e.name.endsWith('.json')) out.push(r);
+    }
+  };
+  for (const dir of MESH_DIRS) walk(dir);
+  return out;
+}
+// Sync the board across machines via an isolated helper repo pushed to a shared
+// git branch. Two-way newer-wins union of the file-per-record dirs.
+function meshSync() {
+  const r = repo();
+  const url = r.isGit ? git(['remote', 'get-url', 'origin']) : null;
+  if (!url) return { ok: false, why: 'no git remote (origin)' };
+  const board = DIRS().root;
+  const mr = path.join(board, '.mesh-repo');
+  if (!fs.existsSync(path.join(mr, '.git'))) {
+    fs.mkdirSync(mr, { recursive: true });
+    git(['init', '-q'], { cwd: mr });
+    git(['config', 'user.email', 'classroom@local'], { cwd: mr });
+    git(['config', 'user.name', 'classroom'], { cwd: mr });
+  }
+  git(['remote', 'remove', 'origin'], { cwd: mr, stdio: ['ignore', 'ignore', 'ignore'] });
+  git(['remote', 'add', 'origin', url], { cwd: mr });
+  const onRemote = git(['ls-remote', '--heads', 'origin', MESH_BRANCH], { cwd: mr });
+  let pulled = 0;
+  if (onRemote) {
+    if (git(['fetch', '-q', 'origin', MESH_BRANCH], { cwd: mr }) === null) return { ok: false, why: 'fetch failed' };
+    git(['checkout', '-q', '-B', MESH_BRANCH, 'FETCH_HEAD'], { cwd: mr });
+    for (const rel of listBoardFiles(mr)) if (copyNewer(path.join(mr, rel), path.join(board, rel))) pulled++;
+  } else {
+    git(['checkout', '-q', '-B', MESH_BRANCH], { cwd: mr });
+  }
+  for (const rel of listBoardFiles(board)) copyNewer(path.join(board, rel), path.join(mr, rel));
+  git(['add', '-A'], { cwd: mr });
+  git(['commit', '-q', '-m', 'classroom board sync', '--allow-empty'], { cwd: mr });
+  // git() returns '' on success / null on error; don't ignore stdout (that returns null even on success).
+  let res = git(['push', '-q', 'origin', `${MESH_BRANCH}:${MESH_BRANCH}`], { cwd: mr });
+  if (res === null && onRemote) { // likely non-ff: re-merge once and retry
+    git(['fetch', '-q', 'origin', MESH_BRANCH], { cwd: mr });
+    git(['merge', '-q', '-X', 'theirs', 'FETCH_HEAD'], { cwd: mr, stdio: ['ignore', 'ignore', 'ignore'] });
+    for (const rel of listBoardFiles(mr)) if (copyNewer(path.join(mr, rel), path.join(board, rel))) pulled++;
+    res = git(['push', '-q', 'origin', `${MESH_BRANCH}:${MESH_BRANCH}`], { cwd: mr });
+  }
+  return { ok: true, pulled, pushed: res !== null };
+}
+COMMANDS.mesh = (args) => {
+  ensureDirs();
+  const sid = sessionId(args); touch(sid);
+  const d = DIRS();
+  const flag = path.join(d.root, 'mesh.enabled');
+  const sub = args._[0];
+  if (sub === 'on') { fs.writeFileSync(flag, '1'); console.log('✔ mesh ON — board will sync to the shared git branch on enroll/heartbeat.'); return; }
+  if (sub === 'off') { try { fs.rmSync(flag, { force: true }); } catch {} console.log('✔ mesh OFF.'); return; }
+  const res = meshSync(true);
+  if (!res.ok) { console.error('✗ mesh: ' + res.why); process.exit(1); }
+  console.log(`✔ mesh synced — pulled ${res.pulled} remote record(s), push ${res.pushed ? 'OK' : 'FAILED (retry / check remote)'}.`);
+};
+function meshAuto() {
+  try {
+    const d = DIRS();
+    if (fs.existsSync(path.join(d.root, 'mesh.enabled'))) meshSync(false);
+  } catch {}
+}
+
 COMMANDS.heartbeat = (args) => {
   const sid = sessionId(args);
   touch(sid);
+  meshAuto();
   console.log('✔ heartbeat');
 };
 
@@ -1831,6 +2142,10 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   object <id> --reason ".." | approve <id>   weigh in on a proposal (from your context)
   proposal <id>                           check a proposal's status before you commit
   withdraw <id> [--committed]             close your proposal
+  mission "<goal>"                        broadcast a group goal; then partition it across teammates
+  msg     <@agent|all> "<text>"           direct message another session (seen next turn)
+  pull                                    work-steal: take the best-fit unblocked task for you
+  landq [release|status]                  serialize landing to main (one session lands at a time)
   sync    "<note>"                        post a standup note / finding to the shared feed
   split   <branch> [--base <ref>] [--no-link]   isolated worktree+branch (auto-links node_modules)
   land    [--target main]                 print the integrate-to-main checklist + ahead/behind
@@ -1838,6 +2153,9 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   since                                   show new board activity relevant to you (used by the turn hook)
   peers   [--within <min>]                detect Claude sessions in this repo NOT using the classroom
   install [--no-precommit] | uninstall    hooks: auto-enroll every session (+ pre-commit claim guard)
+  adopt                                   install auto-enroll hooks into ALL worktrees (Squad/Crystal/Conductor)
+  mesh [on|off]                           sync the board across machines via a shared git branch
+  report [--out f]  ·  html [--out f]     run report (who did what) · browser dashboard export
   watch   [--interval <s>] [--once] [--plain]   live agent dashboard (--plain = raw board)
   statusline                              compact one-liner for the Claude Code status line
   status | board   [--json]               show the board

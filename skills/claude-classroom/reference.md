@@ -112,6 +112,27 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.0 — missions, messaging, distribution, interop
+- **Group missions.** `mission "<goal>"` broadcasts a goal; the initiator partitions
+  it and `delegate --to <agent> --after-commit` assigns pieces by fit, taking one
+  share itself. Assignees see `📌 ASSIGNED to you … start after your current commit`
+  via the turn hook. Dogfooded: a real lead session split a Settings feature into
+  UI→nova, DB→sage, API→itself, by expertise.
+- **Direct messaging.** `msg <@agent|sid|all> "…"` → delivered to the recipient at
+  their next turn (via `since`). `resolveSid` matches persona name / short id / sid.
+- **Work-stealing.** `pull` takes the best-fit unblocked task for the caller.
+- **Land queue.** `landq` serializes landing to main (one session at a time, stale
+  lock auto-stolen after 10m); `landq release`/`status`.
+- **Cross-machine `mesh`.** Syncs the file-per-record board over a shared git branch
+  (`claude-classroom-board`) using an isolated `.mesh-repo` helper clone; two-way
+  newer-wins union; `mesh on` auto-syncs on enroll/heartbeat. Dogfooded across two
+  clones + a bare remote: a session on machine B was REFUSED a claim held on
+  machine A. (Claims are nested `claims/<hash>/meta.json` — the sync walks subdirs.)
+- **Interop `adopt`.** Installs auto-enroll hooks into every git worktree, so agents
+  spawned by Claude Squad / Crystal / Conductor auto-join.
+- **`report`** (who-did-what timeline, markdown) and **`html`** (browser dashboard
+  export via ANSI→HTML).
+
 ## Verified behaviour (dogfooded with real `claude -p` sessions)
 - 3 concurrent sessions on one shared working dir each enrolled, saw the others,
   split into worktrees, claimed distinct files, made atomic commits, synced, and

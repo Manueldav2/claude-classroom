@@ -272,6 +272,43 @@ Less context re-derived per session = more parallel throughput.
   pane to keep an eye on everything at once. (Long form:
   `node ~/.claude/skills/claude-classroom/classroom.js watch`.)
 
+## §H. Group missions — "you all work on this together"
+When the user says something like *"I want you guys to work on this as a group / as
+a classroom / all work on this together,"* don't do it all yourself — **orchestrate
+it across the crew**:
+```
+node ~/.claude/skills/claude-classroom/classroom.js mission "<the whole goal>"
+```
+That broadcasts the goal to every live session. Then **you (the initiator) partition
+it**:
+1. Look at the roster + their expertise (`status`) and run `suggest` to see fit.
+2. Break the goal into independent pieces and assign each to the best‑fit teammate:
+   `delegate "<piece>" --to <agent> --mission <id> --after-commit --area "<keywords>"`
+   — `--after-commit` tells them to finish what they're mid‑way on first.
+3. **Take your own share too** — the point is that one session doesn't do everything.
+4. Use `--blocked-by` for pieces that depend on others, so the crew works the
+   critical path.
+
+Each teammate sees, at the start of its next turn (via the hook): *"📌 ASSIGNED to
+you: … — start after your current commit."* They `take` it and go. As the
+initiator you're the conductor for that mission, not the sole worker.
+
+## §I. Talk to each other & balance load
+- **Direct message** a specific session: `msg <@agent|sid|all> "…"` (e.g.
+  `msg @DRACO "can you expose getX() from api.py?"`) — delivered at their next turn.
+- **Work‑steal**: an idle session runs `pull` to grab the best‑fit unblocked task.
+- **Land queue**: when several branches are green, `landq` serializes landing so
+  they don't race to main (`landq release` when merged).
+
+## §J. Beyond one machine / one tool
+- **Cross‑machine**: `mesh on` (then it auto‑syncs) shares the board with teammates'
+  agents on other machines via a shared git branch — claims, conventions, and the
+  roster all sync, so a session on another laptop can't claim a file you hold.
+- **Interop**: if agents are spawned by Claude Squad / Crystal / Conductor (which
+  make worktrees), run `adopt` once so every one of those worktrees auto‑enrolls.
+- **Reports/visual**: `report` for a post‑run "who did what"; `html` to open the
+  board in a browser.
+
 ## Throughout
 - Re-`survey` before each new area — the board, conventions, and peer scan are live.
 - Liveness refreshes on every command; a session unseen 30 min is reaped and its
@@ -281,16 +318,18 @@ Less context re-derived per session = more parallel throughput.
 
 ## Command reference
 `enroll` `profile` `survey` `claim` `contest` `release` `delegate` `offers`/`inbox`
-`suggest` `take` `finish` `drop` `decree` `conventions` `propose` `object`
-`approve` `proposal` `learn` `knowledge` `since` `sync` `split` `land`
-`status`/`board` `watch` `peers` `install`/`uninstall` `heartbeat` `done`/`leave`
-`reap` `whoami` `doctor`. Full help:
+`suggest` `take` `pull` `finish` `drop` `mission` `msg` `landq` `decree`
+`conventions` `propose` `object` `approve` `proposal` `learn` `knowledge` `since`
+`sync` `split` `land` `status`/`board` `watch` `peers` `report` `html` `adopt`
+`mesh` `install`/`uninstall` `heartbeat` `done`/`leave` `reap` `whoami` `doctor`.
+Full help:
 `node ~/.claude/skills/claude-classroom/classroom.js help`.
 
 ## Limits
-- Shared across **worktrees of one repo** (they share `.git`); separate clones
-  don't share a board. Peer *detection*, however, spans any session whose cwd is
-  this repo or one of its worktrees.
+- By default the board is shared across **worktrees of one repo** (they share
+  `.git`). For separate clones / other machines, turn on `mesh` to sync over a
+  shared git branch. Peer *detection* spans any session in this repo or its
+  worktrees.
 - Claims are protocol-enforced advisory locks — honest signals, not OS locks.
   They protect you fully only when every session runs the skill; §A is your
   safety net when they don't.
