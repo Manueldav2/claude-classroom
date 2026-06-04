@@ -12,6 +12,8 @@ delegation, and a live dashboard of the whole crew. Install once per repo and it
 Zero dependencies (Node built‑ins only). State lives in `.git/claude-classroom/`
 — shared across worktrees automatically, never committed.
 
+![Claude Classroom — a live dashboard of the agent crew](demo.gif)
+
 ---
 
 ## Install
@@ -42,22 +44,10 @@ In any git repo, open two+ Claude Code sessions and run **`/claude-classroom`** 
 one. That's it — the first run auto‑installs hooks so **every future session in
 that repo auto‑joins, forever**, with no further action.
 
-Watch the crew live in any terminal:
+Watch the crew live in any terminal (the dashboard shown above) — each agent gets
+a persona, a one‑line task, and `▸` what it just grabbed:
 ```bash
 classroom watch
-```
-```
-  🎓  CLAUDE CLASSROOM   ·   paradigm        3 agents live
-  ────────────────────────────────────────────────────────
-  ┃  🐺  ECHO the relentless · 8aaadb15   ● 24m
-  ┃     therafy  ·  backend, fly  ·  headroom 35%
-  ┃     “diagnose + restore the backend (reported down)”
-  ┃     ▸ grabbing: package.json, firebase.json
-  ┃
-  ┃  🐉  DRACO the firestarter · d1cca59e  ● 12m
-  ┃     ...
-  ────────────────────────────────────────────────────────
-  📐 1 rule   ·   🔒 1 held   ·   ⌃C to exit
 ```
 
 ---
