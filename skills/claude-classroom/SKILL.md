@@ -403,6 +403,32 @@ attention:
   The overseer `answer`s, then the next can go. Watching `classroom watch`, they
   see a 🚨 banner only when you truly need them.
 
+## §P. Autonomous mode — long-running, no sitting around
+When a `project` is active you run **autonomously** — the human just gives the goal:
+- **Never stop to wait, and never ask the user for routine next-steps.** The Stop
+  hook keeps you going while the project isn't done: finish your task → `pull`/`take`
+  the next → review/test a teammate's branch → help the lowest-headroom operator →
+  repeat.
+- **No task from the founder? Join in anyway.** A taskless session pulls from the
+  project backlog or offers help — don't idle.
+- **Coordinate, don't barge.** If an operator holds the files, `ask`/`msg` them and
+  take a self-contained slice (or whatever they hand off) — and keep working
+  meanwhile; don't block waiting on a reply.
+- **Decide with evidence** (run/eval/e2e); `escalate` only big direction calls (one
+  at a time).
+- **When there's genuinely nothing left for you** (backlog empty + claims clear), the
+  loop sends you home — `classroom done` and exit. No hanging around.
+
+**Summon more hands:** `classroom recruit [n]` spawns *n* fresh worker sessions that
+enroll and grind the project autonomously, then exit when done. (Already-running
+*unenrolled* sessions can't be pushed to directly — but once the repo is
+`install`/`adopt`-ed they auto-enroll on their next turn, and the Stop hook pulls any
+taskless enrolled session into the project.)
+
+The loop is bounded: it only runs while a project is **active** (so normal sessions
+stop normally), and it exits a session after it's been idle a few checks. `project
+done` (or removing the project) stands the whole crew down.
+
 ## Throughout
 - Re-`survey` before each new area — the board, conventions, and peer scan are live.
 - Liveness refreshes on every command; a session unseen 30 min is reaped and its
@@ -417,8 +443,8 @@ attention:
 `escalate`/`escalations`/`answer` `review`/`reviews`/`verdict` `msg` `landq` `decree`
 `conventions` `propose` `object` `approve` `proposal` `learn` `knowledge` `since`
 `sync` `split` `land` `status`/`board` `watch` `peers` `report` `html` `adopt`
-`mesh` `install`/`uninstall` `heartbeat` `done`/`leave` `reap` `whoami` `doctor`.
-Full help:
+`mesh` `recruit` `install`/`uninstall` `heartbeat` `done`/`leave` `reap` `whoami`
+`doctor`. Full help:
 `node ~/.claude/skills/claude-classroom/classroom.js help`.
 
 ## Limits

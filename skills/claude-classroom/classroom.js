@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1680,6 +1680,10 @@ COMMANDS['hook-session-start'] = (args) => {
   out.push('Before editing files, coordinate: `node ~/.claude/skills/claude-classroom/classroom.js survey <files>` then `claim` them, commit atomically, `sync` findings. Full protocol: the claude-classroom skill.');
   out.push('If you have deep context on a part of THIS codebase, declare it so work routes to you: `classroom own "<area or path>"`. To ask the operator of an area: `classroom whoknows <area>` then `classroom ask "<area>" "<question>"`.');
   out.push(`Tell the user they can watch the live dashboard with:  ${watchCmd()}`);
+  const aproj = readProject();
+  if (aproj && aproj.status === 'active') {
+    out.push(`🎯 ACTIVE PROJECT: "${aproj.goal}". Work AUTONOMOUSLY toward it — even if the founder gave YOU no task, pull/take open work, help teammates, run/eval/e2e your changes. Don't sit idle and don't ask the human for routine next-steps; the Stop hook keeps you going until it's done, and only escalate big direction calls.`);
+  }
   // After an auto-compaction this SessionStart hook fires with source "compact" —
   // re-inject the checkpoint so the session resumes exactly where it was.
   const cp = readCheckpoint(sid);
@@ -1722,6 +1726,45 @@ COMMANDS['hook-precompact'] = (args) => {
   };
   writeCheckpoint(cp);
   logEvent(sid, 'precompact', `auto-checkpointed before ${trigger || 'compaction'} (${claims.length} claim(s) held)`);
+};
+
+// Stop hook — the autonomous work loop. While a project is active, don't let a
+// session sit idle or stop to ask the user: keep it working (finish, take, pull,
+// review, help), and when there's genuinely nothing left for it, send it home.
+COMMANDS['hook-stop'] = (args) => {
+  ensureDirs();
+  let sid = sessionId(args);
+  if (!process.stdin.isTTY) { try { const j = JSON.parse(fs.readFileSync(0, 'utf8')); if (!process.env.CLAUDE_CODE_SESSION_ID && j.session_id) sid = j.session_id; } catch {} }
+  const m = getMember(sid);
+  if (!m || m.status === 'left') return;          // not enrolled / already departed → allow stop
+  const proj = readProject();
+  if (!proj || proj.status !== 'active') return;   // no active project → normal stop (autonomy is opt-in via a project)
+  touch(sid); reap();
+  const block = (reason) => process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+  const all = readTasks();
+  const myTaken = all.find((t) => t.status === 'taken' && t.takenBy === sid);
+  const assigned = all.find((t) => t.status === 'open' && t.to === sid && !taskBlocked(t, all));
+  let myReviews = []; try { myReviews = readReviews().filter((rv) => rv.status === 'requested' && rv.to === sid); } catch {}
+  const ready = all.filter((t) => t.status === 'open' && !t.to && !taskBlocked(t, all));
+  let action = null;
+  if (myTaken) action = `finish your in-progress task "${myTaken.title}" [${myTaken.id}] — commit it, then \`classroom finish ${myTaken.id}\``;
+  else if (assigned) action = `take your assignment "${assigned.title}" [${assigned.id}] (\`classroom take ${assigned.id}\`) and do it`;
+  else if (myReviews.length) action = `do the review waiting on you [${myReviews[0].id}] — run tests/evals/e2e, then \`classroom verdict\``;
+  else if (ready.length) { const b = ready.map((t) => ({ t, f: fitScore(m, t) })).sort((x, y) => y.f - x.f)[0]; action = `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`; }
+  if (action) {
+    if (m.idleStops || m.exiting) { m.idleStops = 0; m.exiting = false; writeMember(m); }
+    return block(`Project "${proj.goal}" isn't done — do NOT stop or ask the user. ${action}. Re-survey first, work autonomously, commit atomically, then continue.`);
+  }
+  // nothing directly claimable — be useful, then leave if persistently idle
+  const idle = (m.idleStops || 0) + 1; m.idleStops = idle; writeMember(m);
+  const MAX = parseInt(process.env.CLASSROOM_IDLE_EXITS || '3', 10);
+  const claimsHeld = readClaims().filter((c) => c.sid === sid).length;
+  if (idle < MAX) {
+    return block(`Project "${proj.goal}" isn't done and you have no claimed task — but DON'T wait around or ask the user. Be useful: re-survey, check \`offers\` and \`reviews\`, OFFER to review/test a teammate's branch, help the lowest-headroom operator take a slice, or create the next needed task and do it. Then re-check. (idle ${idle}/${MAX})`);
+  }
+  if (claimsHeld) return block(`No task for ${idle} checks but you still hold ${claimsHeld} claim(s) — finish + land them or \`classroom release\` them, then you may leave.`);
+  if (!m.exiting) { m.exiting = true; writeMember(m); return block(`Nothing left for you and your claims are clear. Run \`classroom done\` to leave the classroom — then you're free to stop. 👋 (class dismissed for you)`); }
+  return; // exit acknowledged → allow stop
 };
 
 // Estimate CURRENT context usage from Claude Code's transcript: the latest turn's
@@ -1828,6 +1871,7 @@ COMMANDS.install = (args) => {
   addHook('SessionStart', 'hook-session-start');
   addHook('UserPromptSubmit', 'hook-user-prompt');
   addHook('PreCompact', 'hook-precompact');
+  addHook('Stop', 'hook-stop');
   fs.writeFileSync(sf, JSON.stringify(settings, null, 2));
 
   // 3) short `classroom` launcher on PATH so `classroom watch` works anywhere
@@ -2030,6 +2074,7 @@ COMMANDS.adopt = (args) => {
       add('SessionStart', 'hook-session-start');
       add('UserPromptSubmit', 'hook-user-prompt');
       add('PreCompact', 'hook-precompact');
+      add('Stop', 'hook-stop');
       fs.writeFileSync(sf, JSON.stringify(s, null, 2));
       n++;
     } catch {}
@@ -2393,6 +2438,32 @@ COMMANDS.answer = (args) => {
   console.log(`✔ answered [${e.id}] — ${shortId(e.by)} notified. The team can escalate again now.`);
 };
 
+// ---- summon more hands: spawn worker sessions to grind the project ----
+COMMANDS.recruit = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  const r = repo();
+  if (!r.isGit) { console.error('✗ not a git repo.'); process.exit(2); }
+  const n = Math.max(1, Math.min(parseInt(args._[0] || args.n || '2', 10) || 2, 6));
+  const proj = readProject();
+  const goal = (proj && proj.status === 'active') ? proj.goal : (args.goal || 'help the classroom clear the open backlog');
+  const model = args.model || 'sonnet';
+  const perm = args.safe ? 'acceptEdits' : 'bypassPermissions';
+  const { spawn } = require('child_process');
+  const prompt = `You are a worker joining a Claude Code "classroom" on the repo at ${r.topLevel}. Use the claude-classroom skill: enroll (declare your expertise and the areas you can operate via --owns), then work AUTONOMOUSLY toward the active project: "${goal}". Loop: survey → pull/take the best-fit open task → claim the files → do it → run tests/evals/e2e → get peer review → finish → repeat. Coordinate via the board (msg / ask / whoknows). Do not wait for the human. When there is genuinely nothing left for you, run \`classroom done\` and exit.`;
+  let spawned = 0, failed = 0;
+  for (let i = 0; i < n; i++) {
+    try {
+      const child = spawn('claude', ['-p', prompt, '--model', model, '--permission-mode', perm, '--add-dir', r.topLevel, '--max-turns', '300'], { cwd: r.topLevel, detached: true, stdio: 'ignore' });
+      child.unref(); spawned++;
+    } catch { failed++; }
+  }
+  logEvent(sid, 'recruit', `spawned ${spawned} worker(s) for: ${goal}`);
+  console.log(`✔ recruited ${spawned} worker session(s) (${model}, ${perm}) — they enroll and grind the project autonomously, then exit when done.`);
+  if (failed) console.log(`  (${failed} failed to spawn — is the \`claude\` CLI on PATH?)`);
+  console.log('  Watch them join:  classroom watch');
+};
+
 COMMANDS.heartbeat = (args) => {
   const sid = sessionId(args);
   touch(sid);
@@ -2636,6 +2707,7 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   peers   [--within <min>]                detect Claude sessions in this repo NOT using the classroom
   install [--no-precommit] | uninstall    hooks: auto-enroll every session (+ pre-commit claim guard)
   adopt                                   install auto-enroll hooks into ALL worktrees (Squad/Crystal/Conductor)
+  recruit [n] [--model m] [--safe]        spawn n worker sessions to grind the active project autonomously
   mesh [on|off]                           sync the board across machines via a shared git branch
   report [--out f]  ·  html [--out f]     run report (who did what) · browser dashboard export
   watch   [--interval <s>] [--once] [--plain]   live agent dashboard (--plain = raw board)

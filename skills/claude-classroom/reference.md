@@ -112,6 +112,19 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.5 — autonomous work loop + recruiting
+- **Stop hook** (`hook-stop`): while a project is active, blocks a session from
+  stopping if there's work — directs it to finish/take/pull/review, pulls taskless
+  sessions into the backlog, nudges idle ones to help (review/offer), and after a few
+  idle checks (`CLASSROOM_IDLE_EXITS`, default 3) sends it home (`done`). Silent when
+  no active project or already departed → normal stop. install/adopt register it.
+  This is the "don't sit around; the human just gives the task" loop.
+- **`recruit [n] [--model] [--safe]`**: spawns n detached `claude -p` worker sessions
+  that enroll + grind the active project autonomously (bypassPermissions by default,
+  acceptEdits with --safe; max-turns 300), then exit when done. "Summon more hands."
+- SessionStart brief announces an active project and tells taskless sessions to work
+  autonomously. (Tested: stop-hook blocks/idle-exits correctly; recruit spawns N.)
+
 ## v2.4 — fully automatic compaction (no /compact)
 - A **PreCompact hook** (`hook-precompact`) auto-checkpoints task + claims + branch +
   uncommitted state to the board right before ANY compaction (manual or native
