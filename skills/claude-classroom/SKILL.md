@@ -353,6 +353,47 @@ When you have spare budget, proactively offer to review: take an open review or
 `msg` a teammate *"want me to test/review your branch?"* Work gets done faster **and
 more correctly** when every change is checked + verified by someone who didn't write it.
 
+## §M. Long-running projects — don't stop until it's done
+For a big build the user hands the whole crew:
+```
+classroom project "<the whole goal>" --done "<how we know it's finished>"
+```
+Then break it into a `mission`/backlog and **keep going until the backlog is empty
+AND verified** — never stop early. The rhythm:
+- Finish a task → immediately `pull`/`take` or create the next one. Idle means
+  *pull the next piece*, not stop.
+- When build work is done, create **verification tasks** — run tests, **evals**,
+  and **e2e** — and (if you're the lead with subagent/Task ability) spin off
+  tester sessions/subagents to verify in parallel.
+- Mark `project done` only when the definition of done is met and green.
+`goal` shows backlog progress any time. If the user says "don't stop until it's
+finished," that's this loop: build → verify → fix → repeat → done.
+
+## §N. Manage your OWN context — checkpoint, compact, resume
+Don't get lazy or cut corners when your context window gets low. Instead, compact
+yourself on your own schedule without losing progress:
+1. Keep `profile --headroom <0-100>` roughly current. When it's getting low:
+2. `classroom checkpoint "<where you are>" --next "<what's left>" --files a,b` —
+   your task, claims, and next steps are saved to the board, **and your claims stay
+   held through the compaction**.
+3. Run `/compact`, then `classroom resume` to reload your task + claims + next
+   steps and keep working as if nothing happened.
+4. If you might not come back, `checkpoint --handoff` also posts your work as an
+   open task so a teammate continues it. The project never stalls on one session.
+
+## §O. The overseer model — decide, verify, escalate sparingly
+The human is the **overseer**, working on the highest-value things — protect their
+attention:
+- **Decide the small stuff yourselves.** Most coding choices don't need them.
+- **Get evidence, don't guess.** When you have an idea or a decision point, build a
+  quick spike, **run it, eval it, e2e it**, and let the results choose the path —
+  then `learn "<what the evidence showed>"` so the crew benefits.
+- **`escalate "<question>"` only for big direction calls** (architecture, product,
+  irreversible decisions). The engine allows **one open escalation at a time** — if
+  one's already open, resolve it among yourselves or wait; never all ask at once.
+  The overseer `answer`s, then the next can go. Watching `classroom watch`, they
+  see a 🚨 banner only when you truly need them.
+
 ## Throughout
 - Re-`survey` before each new area — the board, conventions, and peer scan are live.
 - Liveness refreshes on every command; a session unseen 30 min is reaped and its
@@ -363,8 +404,8 @@ more correctly** when every change is checked + verified by someone who didn't w
 ## Command reference
 `enroll` `profile` `own`/`owners`/`whoknows`/`ask` `survey` `claim` `contest`
 `release` `delegate` `offers`/`inbox`
-`suggest` `take` `pull` `finish` `drop` `mission` `review`/`reviews`/`verdict` `msg`
-`landq` `decree`
+`suggest` `take` `pull` `finish` `drop` `project`/`goal` `mission` `checkpoint`/`resume`
+`escalate`/`escalations`/`answer` `review`/`reviews`/`verdict` `msg` `landq` `decree`
 `conventions` `propose` `object` `approve` `proposal` `learn` `knowledge` `since`
 `sync` `split` `land` `status`/`board` `watch` `peers` `report` `html` `adopt`
 `mesh` `install`/`uninstall` `heartbeat` `done`/`leave` `reap` `whoami` `doctor`.

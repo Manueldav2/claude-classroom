@@ -112,6 +112,24 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.3 — long-running completion, self-compaction, overseer model
+- **Projects.** `project "<goal>" --done "<criteria>"` sets a persistent goal;
+  `goal` shows backlog progress (open/doing/done); `project done` completes (guards
+  on remaining tasks). SKILL §M: build → verify (tests/evals/e2e + review) → repeat
+  until empty + green; idle = pull the next task, don't stop.
+- **Self-compaction.** `checkpoint "<where I am>" --next --files [--handoff]` saves
+  task + claims + next-steps to the board (claims survive compaction); `/compact`;
+  then `resume` reloads everything (+ active project + new activity). `--handoff`
+  also posts the work as an open task so a teammate can continue.
+- **Overseer model.** `escalate "<q>"` to the human — engine enforces **one open
+  escalation at a time** (others must resolve among themselves / wait); `escalations`
+  lists open ones; `answer <id> "<direction>"` closes + notifies. SKILL §O: decide
+  small stuff, get empirical evidence (run/eval/e2e), escalate only big direction.
+- **Holistic watch + legend.** Dashboard now shows a 🚨 NEEDS-YOU banner (open
+  escalation), a 🎯 project line with backlog counts, a BOARD strip
+  (claims/tasks/reviews/rules/operators/messages), and a permanent KEY explaining
+  every glyph. checkpoints/escalations are mesh-synced.
+
 ## v2.2 — peer review + a wildly-better watch
 - **Peer review.** `review "<what>" [--to a] [--branch b]` requests a review,
   auto-routed to the area's operator (ownerMatch) or a fresh session; `reviews`

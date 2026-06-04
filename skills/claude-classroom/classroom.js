@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -94,13 +94,16 @@ const DIRS = () => {
     messages: path.join(root, 'messages'),
     missions: path.join(root, 'missions'),
     reviews: path.join(root, 'reviews'),
+    checkpoints: path.join(root, 'checkpoints'),
+    escalations: path.join(root, 'escalations'),
+    project: path.join(root, 'project.json'),
     events: path.join(root, 'events.log'),
   };
 };
 
 function ensureDirs() {
   const d = DIRS();
-  for (const k of ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions', 'reviews']) {
+  for (const k of ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions', 'reviews', 'checkpoints', 'escalations']) {
     fs.mkdirSync(d[k], { recursive: true });
   }
   if (!fs.existsSync(d.events)) fs.writeFileSync(d.events, '');
@@ -591,6 +594,18 @@ function renderDashboard(meSid, tick = 0) {
     + '   ' + BOLD + fg(220) + members.length + (members.length === 1 ? ' agent live' : ' agents live') + RESET
     + (ghosts.length ? DIM + '  +' + ghosts.length + ' detected' + RESET : '') + '   ' + dots);
   L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
+  // overseer attention + project line (holistic top-of-cockpit)
+  const openEsc = (() => { try { return readEscalations().filter((e) => e.status === 'open'); } catch { return []; } })();
+  for (const e of openEsc) {
+    L.push('  ' + fg(196) + BOLD + '🚨 NEEDS YOU' + RESET + '  ' + C(e.by) + disp(e.by).name + RESET + ' asks: ' + fg(231) + trunc(e.q, W - 22) + RESET);
+  }
+  const proj = (() => { try { return readProject(); } catch { return null; } })();
+  if (proj && proj.status === 'active') {
+    const all = readTasks();
+    const o = all.filter((t) => t.status === 'open').length, dn = all.filter((t) => t.status === 'done').length, dg = all.filter((t) => t.status === 'taken').length;
+    L.push('  ' + fg(213) + '🎯 ' + BOLD + trunc(proj.goal, W - 34) + RESET + DIM + '   ' + o + ' open · ' + dg + ' doing · ' + dn + ' done' + RESET);
+  }
+  if (openEsc.length || (proj && proj.status === 'active')) L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
   if (!members.length) {
     L.push(''); L.push('   ' + DIM + 'nobody in class right now — open a session to begin.' + RESET); L.push('');
   }
@@ -649,14 +664,26 @@ function renderDashboard(meSid, tick = 0) {
   }
   L.push('');
   L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
+  // BOARD strip — the whole state at a glance
+  const allT = readTasks();
   const convs = readDecisions();
-  const foot = [];
-  if (convs.length) foot.push(fg(220) + '📐 ' + convs.length + (convs.length === 1 ? ' rule' : ' rules') + RESET);
   const claims = readClaims().filter((c) => members.some((m) => m.sid === c.sid)).length;
-  if (claims) foot.push(fg(203) + '🔒 ' + claims + ' held' + RESET);
-  if (msgs.length) foot.push(fg(213) + '💬 ' + msgs.length + RESET);
-  foot.push(DIM + '⌃C to exit' + RESET);
-  L.push('  ' + foot.join(DIM + '   ·   ' + RESET));
+  const openTasks = allT.filter((t) => t.status === 'open' && !taskBlocked(t, allT)).length;
+  const blocked = allT.filter((t) => t.status === 'open' && taskBlocked(t, allT)).length;
+  const pendRev = (() => { try { return readReviews().filter((x) => x.status === 'requested').length; } catch { return 0; } })();
+  const operators = members.filter((m) => (m.owns || []).length).length;
+  const board = [];
+  board.push(fg(203) + '🔒 ' + claims + ' claims' + RESET);
+  board.push(fg(45) + '📋 ' + openTasks + ' tasks' + (blocked ? ' (+' + blocked + ' blocked)' : '') + RESET);
+  if (pendRev) board.push(fg(118) + '🔎 ' + pendRev + ' review' + (pendRev === 1 ? '' : 's') + RESET);
+  if (convs.length) board.push(fg(220) + '📐 ' + convs.length + ' rules' + RESET);
+  if (operators) board.push(fg(141) + '⬡ ' + operators + ' operators' + RESET);
+  board.push(fg(213) + '💬 ' + msgs.length + RESET);
+  L.push('  ' + DIM + 'BOARD  ' + RESET + board.join(DIM + ' · ' + RESET));
+  // LEGEND — what every glyph means, always shown
+  L.push('  ' + DIM + 'KEY  ' + fg(82) + '●' + DIM + ' live ' + fg(220) + '●' + DIM + ' idle ' + RESET + DIM + '○ away  ┃ agent  ⬡ owns area  🎯 project  🚨 needs-you' + RESET);
+  L.push('  ' + DIM + '     💬 message/ping  📝 note  ─▶ to  🔎 review  📌 assigned  📐 rule  🔒 claim  📋 task' + RESET);
+  L.push('  ' + DIM + 'classroom: status · whoknows <area> · ask · review · escalate · checkpoint     ⌃C to exit' + RESET);
   L.push('');
   return L.join('\n');
 }
@@ -893,6 +920,13 @@ function readReviews() {
 }
 function writeReview(x) { const d = ensureDirs(); atomicWrite(path.join(d.reviews, x.id + '.json'), JSON.stringify(x, null, 2)); return x; }
 function getReview(id) { const all = readReviews(); return all.find((x) => x.id === id) || all.find((x) => x.id.startsWith(id)) || null; }
+function readCheckpoint(sid) { return readJSON(path.join(DIRS().checkpoints, safeName(sid) + '.json')); }
+function writeCheckpoint(cp) { const d = ensureDirs(); atomicWrite(path.join(d.checkpoints, safeName(cp.sid) + '.json'), JSON.stringify(cp, null, 2)); return cp; }
+function readEscalations() { const d = DIRS(); let f = []; try { f = fs.readdirSync(d.escalations).filter((x) => x.endsWith('.json')); } catch { return []; } return f.map((x) => readJSON(path.join(d.escalations, x))).filter(Boolean).sort((a, b) => a.ts - b.ts); }
+function writeEscalation(x) { const d = ensureDirs(); atomicWrite(path.join(d.escalations, x.id + '.json'), JSON.stringify(x, null, 2)); return x; }
+function getEscalation(id) { const a = readEscalations(); return a.find((e) => e.id === id) || a.find((e) => e.id.startsWith(id)) || null; }
+function readProject() { return readJSON(DIRS().project); }
+function writeProject(p) { ensureDirs(); atomicWrite(DIRS().project, JSON.stringify(p, null, 2)); return p; }
 
 // resolve a token (sid, short id, or persona/display name) to a live member's sid.
 function resolveSid(token) {
@@ -1919,7 +1953,7 @@ COMMANDS.adopt = (args) => {
 
 // ---- cross-machine board over a shared git branch ----
 const MESH_BRANCH = 'claude-classroom-board';
-const MESH_DIRS = ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions'];
+const MESH_DIRS = ['members', 'claims', 'tasks', 'proposals', 'decisions', 'knowledge', 'messages', 'missions', 'reviews', 'checkpoints', 'escalations'];
 function tsOf(file) { try { const o = JSON.parse(fs.readFileSync(file, 'utf8')); return o.lastSeen || o.updatedAt || o.ts || o.createdAt || 0; } catch { return 0; } }
 function copyNewer(src, dst) {
   try {
@@ -2130,6 +2164,146 @@ COMMANDS.verdict = (args) => {
   writeMessage({ id: newId('m'), from: sid, to: x.by, text: `${icon} REVIEW ${status.toUpperCase()} [${x.id}]: ${x.what}${ran ? ' · ran: ' + ran : ''}${notes ? ' — ' + notes : ''}`, ts: now() });
   logEvent(sid, 'verdict', `${status} [${x.id}]${ran ? ' (ran ' + ran + ')' : ''}`, { to: x.by });
   console.log(`✔ verdict recorded: ${status}. ${shortId(x.by)} notified.`);
+};
+
+// ---- self-compaction: checkpoint your work, /compact, then resume ----
+COMMANDS.checkpoint = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  const m = getMember(sid);
+  if (!m) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const summary = args._.join(' ').trim() || args.summary || '';
+  if (!summary) { console.error('✗ usage: checkpoint "<where you are / what you\'ve done>" [--next "what\'s left"] [--files a,b] [--handoff]'); process.exit(2); }
+  const claims = readClaims().filter((c) => c.sid === sid).map((c) => c.path);
+  const cp = { sid, task: m.task || null, summary, next: args.next || '', files: args.files ? parseList(args.files) : [], claims, branch: repo().branch || null, ts: now() };
+  writeCheckpoint(cp);
+  logEvent(sid, 'checkpoint', summary);
+  if (args.handoff) {
+    const t = { id: newTaskId(), title: `(handoff) ${m.task || summary}`, area: (m.owns || []).join(' '), reason: `resume from checkpoint: ${summary}${args.next ? ' · next: ' + args.next : ''}`, effort: 'med', to: null, createdBy: sid, status: 'open', takenBy: null, rationale: null, blockedBy: [], createdAt: now() };
+    writeTask(t);
+    logEvent(sid, 'handoff', `[${t.id}] ${t.title}`, { task: t.id });
+  }
+  meshAuto();
+  console.log('✔ checkpoint saved (task, claims, and next steps preserved on the board).');
+  console.log('  Your claims stay held through compaction. Now you can safely /compact — then run `classroom resume` to reload.');
+  if (args.handoff) console.log('  Also posted as an open task so a teammate can pick it up if you don\'t come back.');
+};
+
+COMMANDS.resume = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  const m = getMember(sid);
+  const cp = readCheckpoint(sid);
+  console.log('▶ RESUME — re-orienting after compaction');
+  if (cp) {
+    console.log(`  task:    ${cp.task || '(none)'}`);
+    console.log(`  you were: ${cp.summary}`);
+    if (cp.next) console.log(`  next:    ${cp.next}`);
+    if (cp.claims && cp.claims.length) console.log(`  claims (still yours): ${cp.claims.join(', ')}`);
+    if (cp.files && cp.files.length) console.log(`  files in flight: ${cp.files.join(', ')}`);
+    console.log(`  (checkpointed ${rel(cp.ts)})`);
+  } else {
+    console.log('  (no checkpoint found — survey the board to re-orient)');
+  }
+  const proj = readProject();
+  if (proj && proj.status === 'active') {
+    const all = readTasks();
+    const open = all.filter((t) => t.status === 'open').length;
+    console.log(`  🎯 PROJECT: ${proj.goal}  (${open} task(s) still open — keep going until done)`);
+  }
+  console.log('  — new activity since you left —');
+  COMMANDS.since({ _: [], sid: args.sid });
+};
+
+// ---- a long-running project with a definition of done ----
+COMMANDS.project = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const sub = args._[0];
+  if (sub === 'done' || sub === 'complete') {
+    const p = readProject();
+    if (!p) { console.error('✗ no active project.'); process.exit(1); }
+    const open = readTasks().filter((t) => t.status === 'open' || t.status === 'taken').length;
+    if (open && !args.force) { console.error(`✗ ${open} task(s) still open/in-progress — finish + verify them first, or --force.`); process.exit(1); }
+    writeProject({ ...p, status: 'complete', completedBy: sid, completedAt: now() });
+    writeMessage({ id: newId('m'), from: sid, to: 'all', text: `🎉 PROJECT COMPLETE: ${p.goal}`, ts: now() });
+    logEvent(sid, 'project-done', p.goal);
+    console.log(`🎉 project marked complete: ${p.goal}`);
+    return;
+  }
+  const goal = args._.join(' ').trim() || args.goal || '';
+  if (!goal) { COMMANDS.goal(args); return; }
+  const p = { id: newId('P'), goal, done: args.done || '', by: sid, status: 'active', createdAt: now() };
+  writeProject(p);
+  writeMessage({ id: newId('m'), from: sid, to: 'all', text: `🎯 PROJECT: ${goal}${p.done ? ' · done = ' + p.done : ''} — don't stop until it's finished + verified.`, ts: now() });
+  logEvent(sid, 'project', goal, { done: p.done });
+  meshAuto();
+  console.log(`✔ project set: ${goal}`);
+  if (p.done) console.log(`  definition of done: ${p.done}`);
+  console.log('  Break it into tasks (`mission`/`delegate`), keep `pull`ing + `take`ing until the backlog is empty AND verified (tests/evals/e2e + peer review), then `project done`.');
+};
+
+COMMANDS.goal = (args) => {
+  ensureDirs(); reap();
+  const p = readProject();
+  if (!p) { console.log('No active project. Set one:  classroom project "<goal>" --done "<definition of done>"'); return; }
+  const all = readTasks();
+  const open = all.filter((t) => t.status === 'open').length;
+  const doing = all.filter((t) => t.status === 'taken').length;
+  const done = all.filter((t) => t.status === 'done').length;
+  console.log(`🎯 PROJECT: ${p.goal}   [${p.status.toUpperCase()}]`);
+  if (p.done) console.log(`   done when: ${p.done}`);
+  console.log(`   backlog: ${open} open · ${doing} in progress · ${done} done`);
+  if (p.status === 'active') console.log(open + doing > 0 ? '   → keep going: pull/take open work, verify it, create follow-ups. Do NOT stop until empty + verified.' : '   → backlog clear. Verify everything (tests/evals/e2e + review), then `project done`.');
+};
+
+// ---- escalate to the overseer (the human) — ONE open at a time ----
+COMMANDS.escalate = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args);
+  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  touch(sid);
+  const q = args._.join(' ').trim() || args.q || '';
+  if (!q) { console.error('✗ usage: escalate "<the big-direction question only the overseer should answer>"'); process.exit(2); }
+  const open = readEscalations().filter((e) => e.status === 'open');
+  if (open.length && !args.force) {
+    const e = open[0];
+    console.error(`✗ an escalation to the overseer is already OPEN (by ${shortId(e.by)}): "${e.q}"`);
+    console.error('   Don\'t pile on — the overseer answers ONE at a time. Decide small stuff yourselves, test/eval ideas');
+    console.error('   for evidence, ask the area operator, or wait for the answer. (--force only if truly critical & independent.)');
+    process.exit(1);
+  }
+  const x = { id: newId('e'), by: sid, q, status: 'open', ts: now() };
+  writeEscalation(x);
+  writeMessage({ id: newId('m'), from: sid, to: 'all', text: `🚨 ESCALATED to overseer [${x.id}]: ${q}`, ts: now() });
+  logEvent(sid, 'escalate', q, { escalation: x.id });
+  meshAuto();
+  console.log(`🚨 escalated to the overseer [${x.id}]. The team holds further questions until this is answered — keep working on everything you can meanwhile.`);
+};
+COMMANDS.escalations = (args) => {
+  ensureDirs(); reap();
+  const open = readEscalations().filter((e) => e.status === 'open');
+  console.log(`OPEN ESCALATIONS TO THE OVERSEER (${open.length}):`);
+  if (!open.length) console.log('  (none — the crew is self-sufficient right now)');
+  for (const e of open) console.log(`  🚨 [${e.id}] ${shortId(e.by)} (${rel(e.ts)}): ${e.q}`);
+  if (open.length) console.log('  → answer:  classroom answer <id> "<your direction>"');
+};
+COMMANDS.answer = (args) => {
+  ensureDirs();
+  const sid = sessionId(args);
+  const id = args._[0] || args.id;
+  const a = args._.slice(1).join(' ').trim() || args.a || '';
+  if (!id || !a) { console.error('✗ usage: answer <escalationId> "<your answer/direction>"'); process.exit(2); }
+  const e = getEscalation(id);
+  if (!e) { console.error('✗ no such escalation'); process.exit(1); }
+  writeEscalation({ ...e, status: 'answered', answer: a, answeredBy: sid, answeredAt: now() });
+  writeMessage({ id: newId('m'), from: sid, to: e.by, text: `✅ OVERSEER ANSWER [${e.id}]: ${a}`, ts: now() });
+  logEvent(sid, 'answer', `[${e.id}] ${a}`, { to: e.by });
+  meshAuto();
+  console.log(`✔ answered [${e.id}] — ${shortId(e.by)} notified. The team can escalate again now.`);
 };
 
 COMMANDS.heartbeat = (args) => {
@@ -2357,7 +2531,11 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   object <id> --reason ".." | approve <id>   weigh in on a proposal (from your context)
   proposal <id>                           check a proposal's status before you commit
   withdraw <id> [--committed]             close your proposal
+  project "<goal>" [--done ".."] | goal   set a long-running project + see backlog progress
   mission "<goal>"                        broadcast a group goal; then partition it across teammates
+  checkpoint "<where I am>" [--next ..] [--handoff]   save state so you can /compact then resume
+  resume                                  reload your task/claims/next-steps after a compaction
+  escalate "<question>"                   ask the overseer (only ONE open at a time) · answer <id> ".."
   review "<what>" [--to a] [--branch b]   request peer review (routes to the area operator)
   reviews  ·  verdict <id> approve|changes|reject [--ran ".."] [--notes ".."]   do/answer reviews
   msg     <@agent|all> "<text>"           direct message another session (seen next turn)

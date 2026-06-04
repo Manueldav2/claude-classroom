@@ -72,6 +72,16 @@ On top of that:
 - **Group missions** — tell one session *"work on this as a group"* and it runs
   `mission`, partitions the goal, and assigns each piece to the best‑fit teammate
   (taking its own share) — assignees are notified at their next turn.
+- **Long‑running projects** — `project "<goal>" --done "<criteria>"` + `goal`: the
+  crew works the backlog **until it's empty and verified** (build → run tests/evals/
+  e2e → review → repeat → `project done`). Don't‑stop‑until‑finished, built in.
+- **Self‑compaction** — running low on context? `checkpoint "<where I am>" --next`
+  saves your task + claims + next steps (claims survive), `/compact`, then `resume`
+  reloads and you keep going. No lost progress, no stalling.
+- **Overseer model** — you work on the high‑value stuff; the crew decides the small
+  things, gets evidence (run/eval/e2e), and `escalate`s to you only for big calls —
+  **one at a time** (the others keep working). `classroom watch` shows a 🚨 banner
+  only when they truly need you.
 - **Codebase ownership** — `own "backend/auth, payments"` declares the areas you
   operate; `whoknows <area>` finds the operator and `ask "<area>" "<q>"` routes a
   question to them. `suggest` ranks ownership above generic expertise.
