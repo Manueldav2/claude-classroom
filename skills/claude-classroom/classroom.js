@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.1.0';
+const VERSION = '2.1.1';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1580,11 +1580,17 @@ COMMANDS['hook-session-start'] = (args) => {
     out.push('Other live sessions:');
     for (const o of others) out.push(`  - ${shortId(o.sid)}: ${o.task || '(no task set)'}`);
   }
+  const operators = readMembers().filter((x) => isLive(x) && (x.owns || []).length);
+  if (operators.length) {
+    out.push('Who operates which part of the codebase (ask/delegate to them for their area):');
+    for (const o of operators) out.push(`  - ${shortId(o.sid)} operates: ${o.owns.join(', ')}`);
+  }
   const ds = readDecisions();
   if (ds.length) { out.push('TEAM CONVENTIONS you MUST follow:'); for (const c of ds) out.push(`  - ${c.text}`); }
   const kb = readKnowledge();
   if (kb.length) { out.push('Shared knowledge (inherited):'); for (const k of kb.slice(-10)) out.push(`  - ${k.text}`); }
   out.push('Before editing files, coordinate: `node ~/.claude/skills/claude-classroom/classroom.js survey <files>` then `claim` them, commit atomically, `sync` findings. Full protocol: the claude-classroom skill.');
+  out.push('If you have deep context on a part of THIS codebase, declare it so work routes to you: `classroom own "<area or path>"`. To ask the operator of an area: `classroom whoknows <area>` then `classroom ask "<area>" "<question>"`.');
   out.push(`Tell the user they can watch the live dashboard with:  ${watchCmd()}`);
   console.log(out.join('\n'));
 };
