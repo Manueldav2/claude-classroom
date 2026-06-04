@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.3.0';
+const VERSION = '2.3.1';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1685,7 +1685,18 @@ COMMANDS['hook-session-start'] = (args) => {
 
 COMMANDS['hook-user-prompt'] = (args) => {
   const sid = sessionId(args);
-  if (!getMember(sid)) return;
+  const m = getMember(sid);
+  if (!m) return;
+  // low-context nudge: when self-reported headroom is low, remind to checkpoint +
+  // compact BEFORE degrading (throttled so it doesn't nag every turn).
+  const threshold = parseInt(process.env.CLASSROOM_COMPACT_AT || '25', 10);
+  if ((m.headroom ?? 100) <= threshold && now() - (m.compactNudgedAt || 0) > 5 * 60 * 1000) {
+    m.compactNudgedAt = now();
+    writeMember(m);
+    console.log(`⚠ Context headroom is ${m.headroom}% — low. Before you degrade or cut corners:`);
+    console.log('   1) classroom checkpoint "<where you are>" --next "<what\'s left>"   (saves task + claims + next steps; claims survive)');
+    console.log('   2) /compact   3) classroom resume   — then keep going. Update headroom as you work: classroom profile --headroom <0-100>.');
+  }
   COMMANDS.since({ _: [], quiet: true });
 };
 

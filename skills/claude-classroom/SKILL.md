@@ -372,7 +372,8 @@ finished," that's this loop: build → verify → fix → repeat → done.
 ## §N. Manage your OWN context — checkpoint, compact, resume
 Don't get lazy or cut corners when your context window gets low. Instead, compact
 yourself on your own schedule without losing progress:
-1. Keep `profile --headroom <0-100>` roughly current. When it's getting low:
+1. Keep `profile --headroom <0-100>` roughly current — once it drops below ~25%,
+   the per-turn hook **auto-reminds you** to checkpoint + compact. When it's low:
 2. `classroom checkpoint "<where you are>" --next "<what's left>" --files a,b` —
    your task, claims, and next steps are saved to the board, **and your claims stay
    held through the compaction**.

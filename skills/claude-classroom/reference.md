@@ -120,7 +120,9 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
 - **Self-compaction.** `checkpoint "<where I am>" --next --files [--handoff]` saves
   task + claims + next-steps to the board (claims survive compaction); `/compact`;
   then `resume` reloads everything (+ active project + new activity). `--handoff`
-  also posts the work as an open task so a teammate can continue.
+  also posts the work as an open task so a teammate can continue. The per-turn
+  UserPromptSubmit hook **auto-nudges** to checkpoint+compact when self-reported
+  headroom ≤ 25% (throttled 5 min; `CLASSROOM_COMPACT_AT` overrides the threshold).
 - **Overseer model.** `escalate "<q>"` to the human — engine enforces **one open
   escalation at a time** (others must resolve among themselves / wait); `escalations`
   lists open ones; `answer <id> "<direction>"` closes + notifies. SKILL §O: decide
