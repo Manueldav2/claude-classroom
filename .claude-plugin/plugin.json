@@ -1,7 +1,7 @@
 {
   "name": "claude-classroom",
   "displayName": "Claude Classroom",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "Coordinate multiple Claude Code sessions on one repo: shared board, file claims, reasoned negotiation, context-budget delegation, auto-enroll hooks, pre-commit guard, and a live agent dashboard.",
   "author": { "name": "Manuel David" },
   "homepage": "https://github.com/Manueldav2/claude-classroom",

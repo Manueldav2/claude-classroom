@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.5.0';
+const VERSION = '2.5.1';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -113,12 +113,24 @@ function ensureDirs() {
 // ---------------------------------------------------------------------------
 // identity / time
 // ---------------------------------------------------------------------------
+let _fallbackSid = null;
 function sessionId(args) {
   const raw =
     args.sid || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLASSROOM_SID;
   if (raw) return String(raw);
-  // last resort: a stable-ish id derived from tty+ppid, else random
-  return 'anon-' + crypto.randomBytes(4).toString('hex');
+  if (_fallbackSid) return _fallbackSid;
+  // Some Claude Code setups don't export CLAUDE_CODE_SESSION_ID to Bash. A random
+  // id per call would make enroll and later commands disagree ("not enrolled").
+  // node's direct parent is the ephemeral `bash -c` of each tool call, but its
+  // GRANDPARENT is the long-lived Claude Code process — stable across the whole
+  // session. Seed a deterministic id off that so every command shares one identity.
+  let shell = String(process.ppid || 0);
+  try {
+    const gp = execFileSync('ps', ['-o', 'ppid=', '-p', String(process.ppid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (/^\d+$/.test(gp) && gp !== '0' && gp !== '1') shell = gp;
+  } catch {}
+  _fallbackSid = 'local-' + crypto.createHash('sha1').update(`${shell}|${os.hostname()}`).digest('hex').slice(0, 8);
+  return _fallbackSid;
 }
 const shortId = (sid) => String(sid).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
 const safeName = (sid) => String(sid).replace(/[^A-Za-z0-9_.-]/g, '_');
@@ -267,6 +279,23 @@ function getMember(sid) {
 function touch(sid) {
   const m = getMember(sid);
   if (m) writeMember(m);
+}
+
+// Return the member, auto-enrolling a minimal one if it doesn't exist yet. Makes
+// every command robust to "not enrolled" (e.g. the session env wasn't set, or the
+// model ran a command before enrolling) — it just joins and proceeds.
+function autoEnroll(sid) {
+  let m = getMember(sid);
+  if (m) { m.lastSeen = now(); writeMember(m); return m; }
+  const r = repo();
+  m = {
+    sid, startedAt: now(), host: os.hostname(), name: null, expertise: [], owns: [],
+    headroom: 100, pid: process.pid, cwd: process.cwd(), worktree: r.topLevel || process.cwd(),
+    branch: r.branch || null, status: 'active', task: null, lastEventSeen: now(),
+  };
+  writeMember(m);
+  logEvent(sid, 'enrolled', 'auto-enrolled on first command');
+  return m;
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,11 +1114,7 @@ COMMANDS.claim = (args) => {
   ensureDirs();
   reap();
   const sid = sessionId(args);
-  const m = getMember(sid);
-  if (!m) {
-    console.error('✗ not enrolled. Run `enroll` first.');
-    process.exit(2);
-  }
+  const m = autoEnroll(sid);
   touch(sid);
   const wants = args._.map(normPath);
   if (!wants.length) {
@@ -1169,8 +1194,7 @@ COMMANDS.sync = (args) => {
 COMMANDS.profile = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  const m = getMember(sid);
-  if (!m) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  const m = autoEnroll(sid);
   if (args.expertise) m.expertise = parseList(args.expertise);
   if (args.owns) m.owns = parseList(args.owns);
   if (args.headroom !== undefined) m.headroom = clampPct(args.headroom);
@@ -1187,8 +1211,7 @@ COMMANDS.contest = (args) => {
   ensureDirs();
   reap();
   const sid = sessionId(args);
-  const me = getMember(sid);
-  if (!me) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  const me = autoEnroll(sid);
   touch(sid);
   const wants = args._.map(normPath);
   if (!wants.length) { console.error('✗ usage: contest <path>... --confidence <0-100> --rationale "why you would do this better"'); process.exit(2); }
@@ -1242,7 +1265,7 @@ COMMANDS.contest = (args) => {
 COMMANDS.delegate = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const title = args._.join(' ').trim() || args.title || '';
   if (!title) { console.error('✗ usage: delegate "<task>" [--reason "why"] [--area x] [--effort low|med|high] [--to <sid>] [--mission <id>] [--after-commit]'); process.exit(2); }
@@ -1284,7 +1307,7 @@ COMMANDS.take = (args) => {
   ensureDirs();
   reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const id = args._[0] || args.id;
   if (!id) { console.error('✗ usage: take <taskId> [--fit <0-100>] [--rationale "..."]'); process.exit(2); }
@@ -1392,7 +1415,7 @@ COMMANDS.drop = (args) => {
 COMMANDS.decree = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const text = args._.join(' ').trim() || args.text || '';
   if (!text) { console.error('✗ usage: decree "<convention everyone must follow>" [--scope <area>]'); process.exit(2); }
@@ -1429,7 +1452,7 @@ COMMANDS.revoke = (args) => {
 COMMANDS.propose = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const intent = args._.join(' ').trim() || args.intent || '';
   if (!intent) { console.error('✗ usage: propose "<what you\'re about to commit/do>" [--files a,b]'); process.exit(2); }
@@ -1527,7 +1550,7 @@ COMMANDS.withdraw = (args) => {
 COMMANDS.learn = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const text = args._.join(' ').trim() || args.text || '';
   if (!text) { console.error('✗ usage: learn "<durable fact future sessions should know>"'); process.exit(2); }
@@ -1934,7 +1957,7 @@ COMMANDS.uninstall = (args) => {
 COMMANDS.msg = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const toTok = args._[0] || args.to;
   const text = (args.to ? args._.join(' ') : args._.slice(1).join(' ')).trim() || args.text || '';
@@ -1951,8 +1974,7 @@ COMMANDS.msg = (args) => {
 COMMANDS.pull = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  const me = getMember(sid);
-  if (!me) { console.error('✗ not enrolled.'); process.exit(2); }
+  const me = autoEnroll(sid);
   touch(sid);
   const all = readTasks();
   const open = all.filter((t) => t.status === 'open' && !taskBlocked(t, all) && (!t.to || t.to === sid));
@@ -1966,7 +1988,7 @@ COMMANDS.pull = (args) => {
 COMMANDS.landq = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const d = DIRS();
   const lockDir = path.join(d.root, 'land.lock');
@@ -2001,7 +2023,7 @@ COMMANDS.landq = (args) => {
 COMMANDS.mission = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const goal = args._.join(' ').trim() || args.goal || '';
   if (!goal) { console.error('✗ usage: mission "<what the whole crew should accomplish together>"'); process.exit(2); }
@@ -2168,8 +2190,7 @@ function meshAuto() {
 COMMANDS.own = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  const m = getMember(sid);
-  if (!m) { console.error('✗ not enrolled. Run `enroll` first.'); process.exit(2); }
+  const m = autoEnroll(sid);
   touch(sid);
   const list = args._.flatMap((z) => parseList(z));
   if (!list.length) { console.log(`you operate: ${(m.owns || []).join(', ') || '(nothing declared)'}`); return; }
@@ -2180,8 +2201,7 @@ COMMANDS.own = (args) => {
   console.log('  Teammates route questions & area-tasks here. (`disown <area>` to drop one.)');
 };
 COMMANDS.disown = (args) => {
-  ensureDirs(); const sid = sessionId(args); const m = getMember(sid);
-  if (!m) { console.error('✗ not enrolled.'); process.exit(2); } touch(sid);
+  ensureDirs(); const sid = sessionId(args); const m = autoEnroll(sid); touch(sid);
   const list = args._.flatMap((z) => parseList(z)).map((s) => s.toLowerCase());
   m.owns = (m.owns || []).filter((z) => !list.includes(z.toLowerCase()));
   writeMember(m);
@@ -2210,7 +2230,7 @@ COMMANDS.whoknows = (args) => {
 COMMANDS.ask = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const target = args._[0];
   const q = args._.slice(1).join(' ').trim() || args.q || '';
@@ -2234,7 +2254,7 @@ COMMANDS.ask = (args) => {
 COMMANDS.review = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const what = args._.join(' ').trim() || args.what || '';
   if (!what) { console.error('✗ usage: review "<what to review>" [--to <agent>] [--branch <b>] [--area <x>]'); process.exit(2); }
@@ -2278,7 +2298,7 @@ COMMANDS.reviews = (args) => {
 COMMANDS.verdict = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const id = args._[0] || args.id;
   const decision = (args._[1] || args.decision || '').toLowerCase();
@@ -2302,8 +2322,7 @@ COMMANDS.verdict = (args) => {
 COMMANDS.checkpoint = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  const m = getMember(sid);
-  if (!m) { console.error('✗ not enrolled.'); process.exit(2); }
+  const m = autoEnroll(sid);
   touch(sid);
   const summary = args._.join(' ').trim() || args.summary || '';
   if (!summary) { console.error('✗ usage: checkpoint "<where you are / what you\'ve done>" [--next "what\'s left"] [--files a,b] [--handoff]'); process.exit(2); }
@@ -2352,7 +2371,7 @@ COMMANDS.resume = (args) => {
 COMMANDS.project = (args) => {
   ensureDirs();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const sub = args._[0];
   if (sub === 'done' || sub === 'complete') {
@@ -2396,7 +2415,7 @@ COMMANDS.goal = (args) => {
 COMMANDS.escalate = (args) => {
   ensureDirs(); reap();
   const sid = sessionId(args);
-  if (!getMember(sid)) { console.error('✗ not enrolled.'); process.exit(2); }
+  autoEnroll(sid);
   touch(sid);
   const q = args._.join(' ').trim() || args.q || '';
   if (!q) { console.error('✗ usage: escalate "<the big-direction question only the overseer should answer>"'); process.exit(2); }

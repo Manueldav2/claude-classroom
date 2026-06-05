@@ -112,6 +112,18 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.5.1 — identity robustness ("not enrolled" fix)
+- Some Claude Code setups don't export `CLAUDE_CODE_SESSION_ID` to Bash, so the old
+  random fallback gave a different id per call → enroll and later commands disagreed
+  ("✗ not enrolled"). Fix: the fallback now seeds a **stable** id off node's
+  *grandparent* pid (the long-lived Claude Code process — stable across tool calls;
+  node's direct parent is the ephemeral per-call `bash -c`). Verified stable across
+  separate calls.
+- Plus **auto-enroll**: every command that needs membership now calls `autoEnroll(sid)`
+  and joins on the spot instead of hard-failing — so `mission`/`claim`/etc. work even
+  if you never ran `enroll`. (Identity precedence: `--sid` > `$CLAUDE_CODE_SESSION_ID`
+  > `$CLASSROOM_SID` > stable grandparent-pid fallback.)
+
 ## v2.5 — autonomous work loop + recruiting
 - **Stop hook** (`hook-stop`): while a project is active, blocks a session from
   stopping if there's work — directs it to finish/take/pull/review, pulls taskless
