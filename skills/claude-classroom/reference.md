@@ -112,6 +112,16 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.5.2 — stop asking the founder coordination/ratification questions
+- Behavioral fix: sessions were asking the human to ratify a division of labor they'd
+  already coordinated, or to pick between approaches they could test. SKILL.md now has
+  a top "Golden rule" callout + a rewritten §O with a pre-ask checklist (can the crew
+  decide? can evidence decide? did I already coordinate it?) and an explicit NOT-an-
+  escalation list (division of labor / who-drives-what / "work together or split" /
+  ratifying coordination / testable "which approach"). §P reinforces. The SessionStart
+  brief now injects "DECIDE, don't defer" into every session (verified). Escalate is
+  reserved for what the founder uniquely owns.
+
 ## v2.5.1 — identity robustness ("not enrolled" fix)
 - Some Claude Code setups don't export `CLAUDE_CODE_SESSION_ID` to Bash, so the old
   random fallback gave a different id per call → enroll and later commands disagreed

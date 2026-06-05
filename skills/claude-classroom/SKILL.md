@@ -59,6 +59,15 @@ install --no-precommit`). `classroom uninstall` reverses everything.
 
 ## The protocol — every session
 
+> **Golden rule — you are autonomous, the founder is the overseer.** Decide and act;
+> don't stall to ask. **Division of labor, who-drives-what, "work together or split"
+> is a CREW decision** — settle it with the other sessions (ownership/claims:
+> whoever holds the file drives it) and proceed; never ask the founder to bless it,
+> and never re-ask about coordination you already did. **"Which approach?" you can
+> test → decide with evidence (run/eval/e2e).** Ask the founder ONLY for what they
+> uniquely own (ambiguous product intent, irreversible/cost calls), via `escalate`,
+> one at a time. (See §O.)
+
 ### 1. Enroll + declare your context profile (immediately)
 ```
 node ~/.claude/skills/claude-classroom/classroom.js enroll \
@@ -392,16 +401,30 @@ and nothing is lost.
 
 ## §O. The overseer model — decide, verify, escalate sparingly
 The human is the **overseer**, working on the highest-value things — protect their
-attention:
-- **Decide the small stuff yourselves.** Most coding choices don't need them.
-- **Get evidence, don't guess.** When you have an idea or a decision point, build a
-  quick spike, **run it, eval it, e2e it**, and let the results choose the path —
-  then `learn "<what the evidence showed>"` so the crew benefits.
-- **`escalate "<question>"` only for big direction calls** (architecture, product,
-  irreversible decisions). The engine allows **one open escalation at a time** — if
-  one's already open, resolve it among yourselves or wait; never all ask at once.
-  The overseer `answer`s, then the next can go. Watching `classroom watch`, they
-  see a 🚨 banner only when you truly need them.
+attention. Before you ask the human ANYTHING, run this check and only ask if every
+answer is "no":
+> **Can the crew decide this? · Can evidence decide this? · Did I already coordinate
+> it?** — if any "yes", do NOT ask; act.
+
+**These are NEVER questions for the human — handle them yourself:**
+- **Division of labor / who-does-what / "should we work together or split" / "should
+  I take X or let them"** → this is a *crew* decision. Resolve it directly with the
+  other session(s) via `msg`/`ask`/`contest` and `own`/claims, then **proceed**. The
+  session that owns/claims the file drives it — that's the answer; you don't need the
+  founder to bless it.
+- **"Did the coordination I just set up look right?"** → you already decided it.
+  **Don't ask the human to ratify it.** Proceed.
+- **"Which approach is better?" when you can test it** → decide with **evidence**:
+  build a spike, run it, eval it, e2e it, let the result pick (and `learn` it). If you
+  catch yourself saying "the eval will decide" — then run the eval, don't ask.
+- Small coding choices, naming, refactors, ordering — just make them.
+
+**Only `escalate "<question>"` for things the human UNIQUELY owns:** ambiguous product
+intent, irreversible/business/cost decisions, or a hard architecture fork with no
+cheap way to test it. The engine allows **one open escalation at a time** — if one's
+open, resolve among yourselves or wait. Phrase it as a real decision the founder
+alone can make, not a coordination or "is this ok?" check. They see a 🚨 banner only
+when you truly need them.
 
 ## §P. Autonomous mode — long-running, no sitting around
 When a `project` is active you run **autonomously** — the human just gives the goal:
@@ -414,8 +437,14 @@ When a `project` is active you run **autonomously** — the human just gives the
 - **Coordinate, don't barge.** If an operator holds the files, `ask`/`msg` them and
   take a self-contained slice (or whatever they hand off) — and keep working
   meanwhile; don't block waiting on a reply.
-- **Decide with evidence** (run/eval/e2e); `escalate` only big direction calls (one
-  at a time).
+- **Division of labor is YOUR call, not the founder's.** "Should we work together or
+  split? Who drives this file? Should I take the architecture or let them?" — settle
+  it with the crew (ownership/claims decide it: whoever holds the file drives it) and
+  **proceed**. Never ask the founder to approve or ratify how you split the work, and
+  never re-ask about coordination you've already posted.
+- **Decide with evidence** (run/eval/e2e); if you'd say "the eval will decide," then
+  run it — don't ask. `escalate` only decisions the founder UNIQUELY owns (one at a
+  time): ambiguous product intent, irreversible/cost calls, untestable forks.
 - **When there's genuinely nothing left for you** (backlog empty + claims clear), the
   loop sends you home — `classroom done` and exit. No hanging around.
 

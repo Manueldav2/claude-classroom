@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.5.1';
+const VERSION = '2.5.2';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1702,10 +1702,11 @@ COMMANDS['hook-session-start'] = (args) => {
   if (kb.length) { out.push('Shared knowledge (inherited):'); for (const k of kb.slice(-10)) out.push(`  - ${k.text}`); }
   out.push('Before editing files, coordinate: `node ~/.claude/skills/claude-classroom/classroom.js survey <files>` then `claim` them, commit atomically, `sync` findings. Full protocol: the claude-classroom skill.');
   out.push('If you have deep context on a part of THIS codebase, declare it so work routes to you: `classroom own "<area or path>"`. To ask the operator of an area: `classroom whoknows <area>` then `classroom ask "<area>" "<question>"`.');
+  out.push('DECIDE, don\'t defer: division-of-labor / who-drives-what / "work together or split" is a CREW decision — settle it with the other sessions (msg/ask/contest/ownership) and proceed; never ask the founder to bless it. "Which approach?" you can test = decide with evidence (run/eval/e2e). Don\'t ask the founder to ratify coordination you already did.');
   out.push(`Tell the user they can watch the live dashboard with:  ${watchCmd()}`);
   const aproj = readProject();
   if (aproj && aproj.status === 'active') {
-    out.push(`🎯 ACTIVE PROJECT: "${aproj.goal}". Work AUTONOMOUSLY toward it — even if the founder gave YOU no task, pull/take open work, help teammates, run/eval/e2e your changes. Don't sit idle and don't ask the human for routine next-steps; the Stop hook keeps you going until it's done, and only escalate big direction calls.`);
+    out.push(`🎯 ACTIVE PROJECT: "${aproj.goal}". Work AUTONOMOUSLY toward it — even if the founder gave YOU no task, pull/take open work, help teammates, run/eval/e2e your changes. Don't sit idle and don't ask the human for routine next-steps or to approve crew coordination; the Stop hook keeps you going until it's done. Escalate ONLY decisions the founder uniquely owns (ambiguous product intent / irreversible calls).`);
   }
   // After an auto-compaction this SessionStart hook fires with source "compact" —
   // re-inject the checkpoint so the session resumes exactly where it was.
