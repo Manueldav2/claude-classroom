@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.6.0';
+const VERSION = '2.6.1';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1955,38 +1955,59 @@ COMMANDS['hook-pre-edit'] = (args) => {
 COMMANDS['hook-stop'] = (args) => {
   ensureDirs();
   let sid = sessionId(args);
-  if (!process.stdin.isTTY) { try { const j = JSON.parse(fs.readFileSync(0, 'utf8')); if (!process.env.CLAUDE_CODE_SESSION_ID && j.session_id) sid = j.session_id; } catch {} }
+  let stopActive = false;
+  if (!process.stdin.isTTY) { try { const j = JSON.parse(fs.readFileSync(0, 'utf8')); if (!process.env.CLAUDE_CODE_SESSION_ID && j.session_id) sid = j.session_id; stopActive = !!j.stop_hook_active; } catch {} }
   const m = getMember(sid);
   if (!m || m.status === 'left') return;          // not enrolled / already departed → allow stop
   const proj = readProject();
   if (!proj || proj.status !== 'active') return;   // no active project → normal stop (autonomy is opt-in via a project)
   touch(sid); reap();
   const block = (reason) => process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+  // Anti-loop: NEVER re-block the same demand forever. stop_hook_active means we
+  // already blocked and the session stopped AGAIN anyway — it has seen the nudge
+  // and chosen to stop, often for a good reason we can't see (e.g. the only work
+  // left is a merge it correctly refuses as destructive). After a small cap on
+  // repeats of the SAME demand we let it stop. A session making real progress
+  // hits a different demand each turn, so its counter resets — it's never cut off.
+  const MAX_BLOCKS = parseInt(process.env.CLASSROOM_MAX_STOP_BLOCKS || '2', 10);
   const all = readTasks();
   const myTaken = all.find((t) => t.status === 'taken' && t.takenBy === sid);
   const abandoned = all.find((t) => t.status === 'open' && t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid));
   const assigned = all.find((t) => t.status === 'open' && t.to === sid && !taskBlocked(t, all));
   let myReviews = []; try { myReviews = readReviews().filter((rv) => rv.status === 'requested' && rv.to === sid); } catch {}
   const ready = all.filter((t) => t.status === 'open' && !t.to && !t.abandoned && !taskBlocked(t, all));
-  let action = null;
-  if (myTaken) action = `finish your in-progress task "${myTaken.title}" [${myTaken.id}] — commit it, then \`classroom finish ${myTaken.id}\``;
-  else if (abandoned) action = `RESUME abandoned work "${abandoned.title}" [${abandoned.id}] — ${shortId(abandoned.abandonedBy)} started it then left it unfinished. Finish-the-job before anything new: \`classroom take ${abandoned.id}\` and complete it`;
-  else if (assigned) action = `take your assignment "${assigned.title}" [${assigned.id}] (\`classroom take ${assigned.id}\`) and do it`;
-  else if (myReviews.length) action = `do the review waiting on you [${myReviews[0].id}] — run tests/evals/e2e, then \`classroom verdict\``;
-  else if (ready.length) { const b = ready.map((t) => ({ t, f: fitScore(m, t) })).sort((x, y) => y.f - x.f)[0]; action = `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`; }
-  if (!action) {
-    // a committed-but-unlanded branch with no live owner is unfinished work too —
-    // don't let the crew go home leaving a feature undeployed.
-    try {
-      const liveBranches = new Set(readMembers().filter(isLive).map((mm) => mm.branch));
-      const orphan = unlandedBranches().find((u) => !liveBranches.has(u.branch));
-      if (orphan) action = `an un-landed branch "${orphan.branch}" (+${orphan.ahead} commits, no live owner) was never merged/deployed — finish-the-job: \`git checkout ${orphan.branch}\`, rebase on ${mainRef() || 'main'}, verify, then \`classroom land\``;
-    } catch {}
-  }
+  let action = null, sig = null;
+  if (myTaken) { action = `finish your in-progress task "${myTaken.title}" [${myTaken.id}] — commit it, then \`classroom finish ${myTaken.id}\``; sig = 'task:' + myTaken.id; }
+  else if (abandoned) { action = `RESUME abandoned work "${abandoned.title}" [${abandoned.id}] — ${shortId(abandoned.abandonedBy)} started it then left it unfinished. Finish-the-job before anything new: \`classroom take ${abandoned.id}\` and complete it`; sig = 'abandon:' + abandoned.id; }
+  else if (assigned) { action = `take your assignment "${assigned.title}" [${assigned.id}] (\`classroom take ${assigned.id}\`) and do it`; sig = 'assign:' + assigned.id; }
+  else if (myReviews.length) { action = `do the review waiting on you [${myReviews[0].id}] — run tests/evals/e2e, then \`classroom verdict\``; sig = 'review:' + myReviews[0].id; }
+  else if (ready.length) { const b = ready.map((t) => ({ t, f: fitScore(m, t) })).sort((x, y) => y.f - x.f)[0]; action = `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`; sig = 'pull'; }
+  // NOTE: un-landed orphan branches are deliberately NOT a stop-block. Landing
+  // someone else's branch is a judgment call that can be DESTRUCTIVE (it can
+  // revert production). They're surfaced by `loose-ends`, the dashboard, and the
+  // `project done` guard — where a human/owner decides — never force-merged here.
   if (action) {
-    if (m.idleStops || m.exiting) { m.idleStops = 0; m.exiting = false; writeMember(m); }
-    return block(`Project "${proj.goal}" isn't done — do NOT stop or ask the user. ${action}. Re-survey first, work autonomously, commit atomically, then continue.`);
+    // Already gave up on this exact demand — respect the session's deliberate
+    // choice and don't re-nag until the situation changes (different action / done).
+    if (m.releasedSig === sig) return;
+    if (m.releasedSig && m.releasedSig !== sig) { m.releasedSig = null; }
+    if (stopActive && m.lastStopSig === sig) {
+      m.stopRepeat = (m.stopRepeat || 0) + 1;
+      if (m.stopRepeat >= MAX_BLOCKS) {
+        m.stopRepeat = 0; m.lastStopSig = null; m.releasedSig = sig;
+        if (m.idleStops || m.exiting) { m.idleStops = 0; m.exiting = false; } writeMember(m);
+        logEvent(sid, 'stop-release', `released: "${sig}" repeated ${MAX_BLOCKS}× without action — session chose to stop; won't re-nag until it changes`);
+        return; // allow the stop — do NOT loop
+      }
+    } else {
+      m.stopRepeat = stopActive ? 1 : 0;
+    }
+    m.lastStopSig = sig;
+    if (m.idleStops || m.exiting) { m.idleStops = 0; m.exiting = false; }
+    writeMember(m);
+    return block(`Project "${proj.goal}" isn't done — do NOT stop or ask the user. ${action}. Re-survey first, work autonomously, commit atomically, then continue. (If this nudge is wrong — e.g. it pushes a destructive merge — just stop: this hook backs off after ${MAX_BLOCKS} repeats. Park a branch you intentionally won't land with \`classroom park <branch>\`.)`);
   }
+  if (m.lastStopSig || m.stopRepeat || m.releasedSig) { m.lastStopSig = null; m.stopRepeat = 0; m.releasedSig = null; writeMember(m); }
   // nothing directly claimable — be useful, then leave if persistently idle
   const idle = (m.idleStops || 0) + 1; m.idleStops = idle; writeMember(m);
   const MAX = parseInt(process.env.CLASSROOM_IDLE_EXITS || '3', 10);
@@ -2209,14 +2230,21 @@ function mainRef() {
   return git(['rev-parse', '--verify', '--quiet', 'refs/heads/main']) ? 'main'
     : git(['rev-parse', '--verify', '--quiet', 'refs/heads/master']) ? 'master' : null;
 }
+// Branches the crew has DELIBERATELY decided not to land (superseded, experimental,
+// would-revert-prod). Parked branches are excluded from loose-ends / project-done /
+// the autonomous loop so the tooling never nags to merge work that mustn't merge.
+function readParked() { return readJSON(path.join(DIRS().root, 'parked.json')) || {}; }
+function writeParked(o) { atomicWrite(path.join(ensureDirs().root, 'parked.json'), JSON.stringify(o, null, 2)); }
+
 function unlandedBranches() {
   const base = mainRef();
   if (!base) return [];
   const raw = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']);
   if (!raw) return [];
+  const parked = readParked();
   const out = [];
   for (const b of raw.split('\n').map((s) => s.trim()).filter(Boolean)) {
-    if (b === base) continue;
+    if (b === base || parked[b]) continue;
     const ahead = parseInt(git(['rev-list', '--count', `${base}..${b}`]) || '0', 10);
     if (ahead > 0) {
       out.push({
@@ -2265,10 +2293,51 @@ COMMANDS['loose-ends'] = (args) => {
     console.log('');
   }
   console.log('Finish-the-job rule: clear loose ends BEFORE opening new fronts. `take <id>` to resume a task; check out an un-landed branch and `land` it.');
+  const parkedKeys = Object.keys(readParked());
+  if (parkedKeys.length) console.log(`(${parkedKeys.length} branch(es) parked as intentionally-not-landing: ${parkedKeys.join(', ')} — \`classroom park\` to view)`);
+  console.log('A branch you deliberately won\'t land (superseded / would revert prod)? `classroom park <branch> --reason "..."` so it stops being flagged.');
 };
 COMMANDS.unfinished = COMMANDS['loose-ends'];
 COMMANDS.loose = COMMANDS['loose-ends'];
 COMMANDS.finishup = COMMANDS['loose-ends'];
+
+// park — mark a branch as INTENTIONALLY not landing, so the finish-the-job
+// machinery stops flagging it. The escape valve for "this work mustn't merge"
+// (superseded, experimental, or would revert production).
+COMMANDS.park = (args) => {
+  ensureDirs();
+  const sid = sessionId(args); autoEnroll(sid); touch(sid);
+  const branch = args._[0] || args.branch;
+  if (!branch) {
+    const parked = readParked();
+    const keys = Object.keys(parked);
+    if (!keys.length) { console.log('No parked branches. `park <branch> [--reason "..."]` to mark one as intentionally-not-landing.'); return; }
+    console.log('🅿️  PARKED branches (intentionally not landing):');
+    for (const b of keys) console.log(`   ${b}  — ${parked[b].reason || 'no reason given'}  (by ${shortId(parked[b].by)}, ${rel(parked[b].ts)})`);
+    return;
+  }
+  const reason = args.reason || args._.slice(1).join(' ') || '';
+  const parked = readParked();
+  parked[branch] = { by: sid, reason, ts: now() };
+  writeParked(parked);
+  logEvent(sid, 'parked', `${branch}${reason ? ' — ' + reason : ''}`);
+  meshAuto && meshAuto();
+  console.log(`🅿️  parked "${branch}" — it won't be flagged as a loose end or block \`project done\`.${reason ? ' Reason: ' + reason : ''}`);
+  console.log('   Undo with `classroom unpark ' + branch + '`.');
+};
+COMMANDS.unpark = (args) => {
+  ensureDirs();
+  const sid = sessionId(args); autoEnroll(sid); touch(sid);
+  const branch = args._[0] || args.branch;
+  if (!branch) { console.error('✗ usage: unpark <branch>'); process.exit(2); }
+  const parked = readParked();
+  if (!parked[branch]) { console.log(`"${branch}" wasn't parked.`); return; }
+  delete parked[branch];
+  writeParked(parked);
+  logEvent(sid, 'unparked', branch);
+  meshAuto && meshAuto();
+  console.log(`✔ unparked "${branch}" — it's back in the finish-the-job tracking.`);
+};
 
 // ---- land queue: serialize landing to main so branches don't race ----
 COMMANDS.landq = (args) => {
@@ -3018,6 +3087,7 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   msg     <@agent|all> "<text>"           direct message another session (seen next turn)
   pull                                    work-steal: take best-fit unblocked task (abandoned work first)
   loose-ends | unfinished                 started-but-unfinished work: abandoned tasks + un-landed branches
+  park <branch> [--reason ".."] | unpark  mark a branch as intentionally-not-landing (stops the nagging)
   landq [release|status]                  serialize landing to main (one session lands at a time)
   sync    "<note>"                        post a standup note / finding to the shared feed
   split   <branch> [--base <ref>] [--no-link]   isolated worktree+branch (auto-links node_modules)

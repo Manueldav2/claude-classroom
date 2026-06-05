@@ -112,6 +112,22 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.6.1 — Stop-hook anti-loop + park (fixes a v2.6.0 regression)
+A real user incident: the v2.6.0 Stop hook hard-blocked on an un-landed orphan branch
+and fired 9× identically (it ignored `stop_hook_active`), demanding a merge the session
+had correctly refused as destructive (would revert prod). Fixes:
+- **Anti-loop**: hook-stop now reads `stop_hook_active` and tracks a per-session
+  `stopRepeat`/`lastStopSig`/`releasedSig`. It blocks on the SAME demand at most
+  `CLASSROOM_MAX_STOP_BLOCKS` (default 2) times, then RELEASES and stays quiet for
+  that demand until the situation changes (a different action or it gets done).
+  Progress (a new demand each turn) resets the counter — real work is never cut off.
+- **Orphan branches are advisory, not a Stop-block**: landing someone else's branch
+  can be destructive, so the Stop loop no longer forces it. Un-landed branches stay
+  surfaced in loose-ends / dashboard / the `project done` gate (where a human decides).
+- **`park <branch> [--reason]` / `unpark`**: mark a branch as intentionally-not-landing
+  (parked.json on the board). Parked branches are excluded from loose-ends,
+  `project done`, and the loop — the escape valve for "this work mustn't merge."
+
 ## v2.6.0 — edit-guard, finish-the-job, TUI upgrade (dogfooded on IDEX)
 Built while dogfooding the skill to fix a real IDEX bug (the tab-restore feed bug:
 SessionView.commitSubmission bailed on an empty line buffer, so arrow-key menu

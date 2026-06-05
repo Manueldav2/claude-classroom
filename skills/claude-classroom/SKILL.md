@@ -402,10 +402,18 @@ classroom loose-ends      # abandoned tasks + un-landed branches, all in one vie
   them `↻ resume`. Don't start something new while a started task dangles.
 - **Un-landed branches** — committed work that never reached `main` isn't
   "done": a feature isn't finished until it's *deployed*. `project done` refuses
-  to close while un-landed branches exist (override with `--force`).
-- The autonomous loop (§P) routes idle sessions to finish abandoned tasks and
-  land orphaned branches before sending anyone home. "Done" means landed +
-  verified, not just written.
+  to close while un-landed branches exist (override with `--force`). These are
+  **advisory** — the Stop loop never force-merges an orphan branch, because
+  landing someone else's branch can be destructive (it can revert production).
+- **Deliberately not landing something?** A branch that's superseded,
+  experimental, or would revert prod: `classroom park <branch> --reason "..."`.
+  Parked branches stop being flagged everywhere (loose-ends, dashboard, the
+  `project done` gate). Don't just refuse in prose — `park` it so the tooling
+  knows. `unpark` to undo.
+- The autonomous loop (§P) routes idle sessions to finish abandoned **tasks** and
+  surfaces un-landed branches — but it **backs off after a couple of nudges** on
+  the same item (and respects `stop_hook_active`), so it can never trap you in a
+  loop. If a nudge is wrong, just stop; if it's about a branch, `park` it.
 
 ## §N. Context manages itself — you never run /compact
 Once installed, low-context handling is **automatic** — you don't get lazy and you
