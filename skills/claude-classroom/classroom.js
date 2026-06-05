@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.5.2';
+const VERSION = '2.6.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -208,10 +208,22 @@ function withLock(fn, { timeoutMs = 4000, staleMs = 10000 } = {}) {
 // ---------------------------------------------------------------------------
 // path normalization (repo-relative, posix, no trailing slash)
 // ---------------------------------------------------------------------------
+// Resolve symlinks on the longest existing prefix of a path — so a symlinked
+// repo root (e.g. macOS /var → /private/var, or a symlinked checkout) can't
+// make the same logical file normalize to two different keys. Works for files
+// that don't exist yet (a Write target) by realpath-ing the existing ancestor.
+function realpathSafe(p) {
+  try { return fs.realpathSync(p); } catch {}
+  const dir = path.dirname(p);
+  if (!dir || dir === p) return p;
+  return path.join(realpathSafe(dir), path.basename(p));
+}
+
 function normPath(p) {
   const r = repo();
-  let abs = path.resolve(process.cwd(), p);
-  let relPath = r.topLevel ? path.relative(r.topLevel, abs) : abs;
+  let abs = realpathSafe(path.resolve(process.cwd(), p));
+  const top = r.topLevel ? realpathSafe(r.topLevel) : null;
+  let relPath = top ? path.relative(top, abs) : abs;
   if (relPath === '') relPath = '.';
   relPath = relPath.split(path.sep).join('/');
   relPath = relPath.replace(/\/+$/, '');
@@ -358,11 +370,12 @@ function reap() {
       reaped++;
     }
   }
-  // a delegated task taken by a now-dead session reverts to open so it
-  // isn't lost — someone else can pick it up.
+  // a delegated task taken by a now-dead session reverts to open so it isn't
+  // lost — and is FLAGGED abandoned so the crew goes back and finishes it
+  // instead of it silently rejoining the pile as if never started.
   for (const t of readTasks()) {
     if (t.status === 'taken' && !live.has(t.takenBy)) {
-      writeTask({ ...t, status: 'open', takenBy: null, rationale: null });
+      writeTask({ ...t, status: 'open', takenBy: null, rationale: null, abandoned: true, abandonedBy: t.takenBy, abandonedAt: now() });
       reaped++;
     }
   }
@@ -591,6 +604,32 @@ function quickPersona(sid) {
 }
 const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+// ── dashboard micro-widgets ───────────────────────────────────────────────
+// A filled/empty gauge for a 0-100 value, colored by how much is left.
+// Used for per-agent context headroom — the visual heart of the
+// context-budget-aware delegation story.
+function gauge(pct, width = 10) {
+  const p = Math.max(0, Math.min(100, Math.round(pct)));
+  const filled = Math.round((p / 100) * width);
+  const col = p >= 60 ? fg(46) : p >= 30 ? fg(220) : fg(203);
+  return col + '▕' + '█'.repeat(filled) + RESET + DIM + '░'.repeat(width - filled) + RESET + col + '▏' + RESET;
+}
+// A discrete progress bar (done vs total) for the project line.
+function progressBar(done, total, width = 14) {
+  if (!total) return DIM + '▱'.repeat(width) + RESET;
+  const filled = Math.round((done / total) * width);
+  return fg(213) + '▰'.repeat(filled) + RESET + DIM + '▱'.repeat(width - filled) + RESET;
+}
+// effort → a tiny colored sizing chip.
+function effortChip(effort) {
+  const e = (effort || 'low').toLowerCase();
+  if (e === 'high') return fg(203) + 'L' + RESET;
+  if (e === 'med') return fg(220) + 'M' + RESET;
+  return fg(82) + 'S' + RESET;
+}
+// visible width (ignore ANSI escapes) for layout math.
+function vlen(s) { return String(s).replace(/\x1b\[[0-9;]*m/g, '').length; }
+
 function renderDashboard(meSid, tick = 0) {
   const r = repo();
   const W = Math.max(56, Math.min(process.stdout.columns || 92, 100));
@@ -611,6 +650,13 @@ function renderDashboard(meSid, tick = 0) {
   const pinged = new Set();
   for (const mm of msgs) if (now() - mm.ts < 5 * 60 * 1000 && mm.to && mm.to !== 'all') pinged.add(mm.to);
 
+  // Shared board reads + height-aware density (fit one cockpit screen, no scroll).
+  const H = Math.max(20, process.stdout.rows || 40);
+  const dense = H < 30, roomy = H >= 46;
+  const cap = (small, mid, big) => (dense ? small : roomy ? big : mid);
+  const allTasks = readTasks();
+  const liveClaims = readClaims().filter((c) => liveSids.has(c.sid));
+
   const L = [];
   const spin = fg(45) + SPIN[tick % SPIN.length] + RESET;
   const dots = members.map((m) => {
@@ -630,9 +676,11 @@ function renderDashboard(meSid, tick = 0) {
   }
   const proj = (() => { try { return readProject(); } catch { return null; } })();
   if (proj && proj.status === 'active') {
-    const all = readTasks();
-    const o = all.filter((t) => t.status === 'open').length, dn = all.filter((t) => t.status === 'done').length, dg = all.filter((t) => t.status === 'taken').length;
-    L.push('  ' + fg(213) + '🎯 ' + BOLD + trunc(proj.goal, W - 34) + RESET + DIM + '   ' + o + ' open · ' + dg + ' doing · ' + dn + ' done' + RESET);
+    const o = allTasks.filter((t) => t.status === 'open').length, dn = allTasks.filter((t) => t.status === 'done').length, dg = allTasks.filter((t) => t.status === 'taken').length;
+    const tot = o + dn + dg;
+    L.push('  ' + fg(213) + '🎯 ' + BOLD + trunc(proj.goal, W - 50) + RESET
+      + '  ' + progressBar(dn, tot, 12) + DIM + ' ' + dn + '/' + tot + RESET
+      + DIM + '   ' + o + ' open · ' + dg + ' doing · ' + dn + ' done' + RESET);
   }
   if (openEsc.length || (proj && proj.status === 'active')) L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
   if (!members.length) {
@@ -647,71 +695,119 @@ function renderDashboard(meSid, tick = 0) {
     const dot = age < 180000 ? (tick % 2 ? fg(46) : fg(82)) + '●' + RESET : age < 900000 ? fg(220) + '●' + RESET : DIM + '○' + RESET;
     const you = m.sid === meSid ? DIM + '  (you)' + RESET : '';
     const badge = pinged.has(m.sid) ? '  ' + fg(213) + '💬' + RESET : '';
+    const held = liveClaims.filter((c) => c.sid === m.sid).length;
     L.push('  ' + bar);
     L.push('  ' + bar + '  ' + p.emoji + '  ' + col + BOLD + p.name + RESET + ' ' + DIM + p.trait + RESET
       + '  ' + DIM + '· ' + shortId(m.sid) + RESET
       + '   ' + dot + ' ' + DIM + rel(seen) + RESET + you + badge);
+    const hr = m.headroom ?? 100;
     const meta = [];
     if (m.branch) meta.push(m.branch);
     if (m.expertise && m.expertise.length) meta.push(m.expertise.slice(0, 3).join(', '));
-    meta.push('headroom ' + (m.headroom ?? 100) + '%');
-    L.push('  ' + bar + '     ' + DIM + trunc(meta.join('  ·  '), W - 8) + RESET);
+    L.push('  ' + bar + '     ' + DIM + trunc(meta.join('  ·  '), W - 30) + RESET
+      + '   ' + DIM + 'ctx' + RESET + ' ' + gauge(hr, 8) + ' ' + DIM + hr + '%' + RESET
+      + (held ? '  ' + fg(203) + '🔒' + held + RESET : ''));
     if (m.owns && m.owns.length) L.push('  ' + bar + '     ' + DIM + '⬡ operates: ' + trunc(m.owns.join(', '), W - 18) + RESET);
     const task = (m.task && m.task !== '(auto-enrolled)') ? m.task : 'getting oriented…';
     L.push('  ' + bar + '     ' + col + '“' + trunc(task, W - 12) + '”' + RESET);
-    const latest = agentLatest(m.sid);
-    if (latest) L.push('  ' + bar + '     ' + DIM + '▸ ' + trunc(latest, W - 12) + RESET);
+    if (!dense) { const latest = agentLatest(m.sid); if (latest) L.push('  ' + bar + '     ' + DIM + '▸ ' + trunc(latest, W - 12) + RESET); }
   }
   if (ghosts.length) {
     L.push('');
     L.push('  ' + DIM + "· · ·  also active here, not enrolled (won't see claims)  · · ·" + RESET);
-    for (const g of ghosts) {
+    for (const g of ghosts.slice(0, cap(2, 4, 8))) {
       const gp = disp(g.sid);
       L.push('  ' + DIM + '┃  ' + gp.emoji + '  ' + gp.name + '  · ' + shortId(g.sid)
         + '   ○ ' + rel(g.mtimeMs) + '   — run /claude-classroom to join' + RESET);
     }
   }
-  // ── live chatter: who passed notes / sent messages ──
+  // ── 🔒 the collision map — who holds which files RIGHT NOW ──
+  if (liveClaims.length) {
+    L.push('');
+    L.push('  ' + fg(203) + '🔒 CLAIMS' + RESET + DIM + "   files locked now — don't edit another agent's" + RESET);
+    const shownC = liveClaims.slice(0, cap(3, 6, 10));
+    for (const c of shownC) {
+      const mine = c.sid === meSid ? ' ' + fg(46) + '(yours)' + RESET : '';
+      L.push('   ' + fg(203) + '·' + RESET + ' ' + trunc(c.path, W - 36) + '  ' + fg(244) + '→' + RESET + ' ' + C(c.sid) + disp(c.sid).name + RESET + mine
+        + (c.intent ? DIM + '  ' + trunc(c.intent, 26) + RESET : ''));
+    }
+    if (liveClaims.length > shownC.length) L.push('   ' + DIM + '+' + (liveClaims.length - shownC.length) + ' more locked…' + RESET);
+  }
+  // ── 📋 backlog — what the crew is doing / what's up for grabs ──
+  const activeTasks = allTasks.filter((t) => t.status === 'open' || t.status === 'taken');
+  if (activeTasks.length) {
+    L.push('');
+    L.push('  ' + fg(45) + '📋 BACKLOG' + RESET + DIM + '   the team queue — `take <id>` to grab one' + RESET);
+    const rank = { taken: 0, open: 1 };
+    const sorted = activeTasks.slice().sort((a, b) => (rank[a.status] - rank[b.status]) || (a.createdAt - b.createdAt));
+    const shownT = sorted.slice(0, cap(3, 5, 8));
+    for (const t of shownT) {
+      const isBlocked = t.status === 'open' && taskBlocked(t, allTasks);
+      let who;
+      if (t.status === 'taken' && t.takenBy) who = fg(244) + '→ ' + RESET + C(t.takenBy) + disp(t.takenBy).name + RESET + (t.fit ? DIM + ' @' + t.fit : '') + RESET;
+      else if (t.abandoned) who = fg(208) + 'resume' + RESET + DIM + ' (was ' + shortId(t.abandonedBy) + ')' + RESET;
+      else if (t.to) who = fg(244) + '→ ' + RESET + DIM + 'routed ' + shortId(t.to) + RESET;
+      else who = fg(82) + 'open' + RESET;
+      const mark = t.status === 'taken' ? fg(220) + '◐' + RESET : isBlocked ? DIM + '⛔' + RESET : t.abandoned ? fg(208) + '↻' + RESET : fg(45) + '○' + RESET;
+      L.push('   ' + mark + ' ' + DIM + '[' + t.id + ']' + RESET + ' ' + trunc(t.title, W - 42) + '  ' + effortChip(t.effort) + '  ' + who);
+    }
+    if (sorted.length > shownT.length) L.push('   ' + DIM + '+' + (sorted.length - shownT.length) + ' more queued…' + RESET);
+  }
+  // ── 🔎 review queue — awaiting a verdict before landing ──
+  let reviewsQ = [];
+  try { reviewsQ = readReviews().filter((x) => x.status === 'requested'); } catch {}
+  if (reviewsQ.length) {
+    L.push('');
+    L.push('  ' + fg(118) + '🔎 REVIEW QUEUE' + RESET + DIM + '   verify (tests/evals/e2e) then `verdict`' + RESET);
+    for (const x of reviewsQ.slice(0, cap(2, 3, 5))) {
+      const to = x.to ? C(x.to) + disp(x.to).name + RESET : fg(220) + 'anyone' + RESET;
+      L.push('   ' + fg(118) + '·' + RESET + ' ' + DIM + '[' + x.id + ']' + RESET + ' ' + trunc(x.what, W - 40)
+        + '  ' + C(x.by) + disp(x.by).name + RESET + ' ' + fg(244) + '─▶' + RESET + ' ' + to);
+    }
+  }
+  // ── 💬 live chatter: notes + messages flying around ──
   let notes = [];
   try { notes = allEvents().filter((e) => e.kind === 'note'); } catch {}
   const feed = [
     ...msgs.map((mm) => ({ ts: mm.ts, from: mm.from, to: mm.to, text: mm.text, kind: 'msg' })),
     ...notes.map((e) => ({ ts: e.ts, from: e.sid, to: null, text: e.msg, kind: 'note' })),
-  ].sort((a, b) => a.ts - b.ts).slice(-7);
+  ].sort((a, b) => a.ts - b.ts).slice(-cap(3, 5, 8));
   L.push('');
   L.push('  ' + fg(213) + '💬 CHATTER' + RESET + DIM + '   notes & messages flying around' + RESET);
   if (!feed.length) L.push('   ' + DIM + '(quiet so far — no notes or messages)' + RESET);
   for (const f of feed) {
     const from = disp(f.from);
-    const head = C(f.from) + from.emoji + ' ' + BOLD + from.name + RESET;
+    const fhead = C(f.from) + from.emoji + ' ' + BOLD + from.name + RESET;
     if (f.kind === 'msg') {
       const to = f.to === 'all' ? fg(220) + 'everyone' + RESET : C(f.to) + disp(f.to).name + RESET;
-      L.push('   ' + head + ' ' + fg(244) + '─▶' + RESET + ' ' + to + DIM + '  ' + trunc(f.text, W - 28) + RESET + DIM + '  ' + rel(f.ts) + RESET);
+      L.push('   ' + fhead + ' ' + fg(244) + '─▶' + RESET + ' ' + to + DIM + '  ' + trunc(f.text, W - 28) + RESET + DIM + '  ' + rel(f.ts) + RESET);
     } else {
-      L.push('   ' + head + ' ' + DIM + '📝 ' + trunc(f.text, W - 22) + '  ' + rel(f.ts) + RESET);
+      L.push('   ' + fhead + ' ' + DIM + '📝 ' + trunc(f.text, W - 22) + '  ' + rel(f.ts) + RESET);
     }
   }
   L.push('');
   L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
   // BOARD strip — the whole state at a glance
-  const allT = readTasks();
+  const allT = allTasks;
   const convs = readDecisions();
-  const claims = readClaims().filter((c) => members.some((m) => m.sid === c.sid)).length;
+  const claims = liveClaims.length;
   const openTasks = allT.filter((t) => t.status === 'open' && !taskBlocked(t, allT)).length;
   const blocked = allT.filter((t) => t.status === 'open' && taskBlocked(t, allT)).length;
-  const pendRev = (() => { try { return readReviews().filter((x) => x.status === 'requested').length; } catch { return 0; } })();
+  const pendRev = reviewsQ.length;
   const operators = members.filter((m) => (m.owns || []).length).length;
   const board = [];
   board.push(fg(203) + '🔒 ' + claims + ' claims' + RESET);
   board.push(fg(45) + '📋 ' + openTasks + ' tasks' + (blocked ? ' (+' + blocked + ' blocked)' : '') + RESET);
+  const looseN = allT.filter((t) => t.status === 'open' && t.abandoned).length;
+  if (looseN) board.push(fg(208) + '🧵 ' + looseN + ' to finish' + RESET);
   if (pendRev) board.push(fg(118) + '🔎 ' + pendRev + ' review' + (pendRev === 1 ? '' : 's') + RESET);
   if (convs.length) board.push(fg(220) + '📐 ' + convs.length + ' rules' + RESET);
   if (operators) board.push(fg(141) + '⬡ ' + operators + ' operators' + RESET);
   board.push(fg(213) + '💬 ' + msgs.length + RESET);
   L.push('  ' + DIM + 'BOARD  ' + RESET + board.join(DIM + ' · ' + RESET));
   // LEGEND — what every glyph means, always shown
-  L.push('  ' + DIM + 'KEY  ' + fg(82) + '●' + DIM + ' live ' + fg(220) + '●' + DIM + ' idle ' + RESET + DIM + '○ away  ┃ agent  ⬡ owns area  🎯 project  🚨 needs-you' + RESET);
-  L.push('  ' + DIM + '     💬 message/ping  📝 note  ─▶ to  🔎 review  📌 assigned  📐 rule  🔒 claim  📋 task' + RESET);
+  L.push('  ' + DIM + 'KEY  ' + fg(82) + '●' + DIM + ' live ' + fg(220) + '●' + DIM + ' idle ' + RESET + DIM + '○ away  ┃ agent  ⬡ owns area  🎯 project  🚨 needs-you  ' + gauge(70, 4) + ' ctx left' + RESET);
+  L.push('  ' + DIM + '     task: ' + fg(45) + '○' + DIM + ' open ' + fg(220) + '◐' + DIM + ' doing ⛔ blocked   🔒 claim/file  💬 msg  📝 note  ─▶ to  🔎 review  📐 rule' + RESET);
   L.push('  ' + DIM + 'classroom: status · whoknows <area> · ask · review · escalate · checkpoint     ⌃C to exit' + RESET);
   L.push('');
   return L.join('\n');
@@ -1316,9 +1412,24 @@ COMMANDS.take = (args) => {
   const outcome = withLock(() => {
     const t = getTask(id);
     if (!t) return { err: 'no such task' };
-    if (t.to && t.to !== sid) return { err: `task is addressed to ${shortId(t.to)}` };
     if (t.status === 'done' || t.status === 'dropped') return { err: `task is ${t.status}` };
     if (taskBlocked(t, readTasks())) return { err: `blocked by ${(t.blockedBy || []).join(',')} — finish those first` };
+    // `--to` is a SOFT routing hint, not a lock. If the addressee is gone (stale/
+    // departed) the task is orphaned — adopt it. If they're still LIVE, require a
+    // fit-based takeover (mirrors the `taken` contest) so live routing stays honest.
+    if (t.to && t.to !== sid) {
+      const assigneeLive = readMembers().filter(isLive).some((m) => m.sid === t.to);
+      if (assigneeLive) {
+        const heldFit = t.fit ?? 60;
+        if (fit <= heldFit) {
+          return { err: `routed to ${shortId(t.to)} (live) @fit ${heldFit}; your fit ${fit} isn't higher — msg them to hand off, or make a stronger case.` };
+        }
+        writeTask({ ...t, status: 'taken', takenBy: sid, to: sid, fit, rationale, takenAt: now(), tookFrom: t.to });
+        return { t, tookFrom: t.to, heldFit };
+      }
+      writeTask({ ...t, status: 'taken', takenBy: sid, to: sid, fit, rationale, takenAt: now(), adoptedFrom: t.to });
+      return { t, adoptedFrom: t.to };
+    }
     if (t.status === 'taken' && t.takenBy !== sid) {
       // fit-based contest for the task: a clearly better-fit session takes over.
       const heldFit = t.fit ?? 50;
@@ -1335,6 +1446,9 @@ COMMANDS.take = (args) => {
   if (outcome.tookFrom) {
     logEvent(sid, 'took-over', `[${outcome.t.id}] ${outcome.t.title} from ${shortId(outcome.tookFrom)} (fit ${fit}>${outcome.heldFit})${rationale ? ' — ' + rationale : ''}`, { task: outcome.t.id });
     console.log(`✔ took over [${outcome.t.id}] from ${shortId(outcome.tookFrom)} (fit ${fit} > ${outcome.heldFit}) — better-fit reassignment.`);
+  } else if (outcome.adoptedFrom) {
+    logEvent(sid, 'took', `[${outcome.t.id}] ${outcome.t.title} (adopted from departed ${shortId(outcome.adoptedFrom)}, fit ${fit})`, { task: outcome.t.id });
+    console.log(`✔ adopted [${outcome.t.id}] "${outcome.t.title}" — was routed to ${shortId(outcome.adoptedFrom)} who has left. It's yours now.`);
   } else {
     logEvent(sid, 'took', `[${outcome.t.id}] ${outcome.t.title} (fit ${fit})`, { task: outcome.t.id });
     console.log(`✔ took [${outcome.t.id}] "${outcome.t.title}" @fit ${fit}. Now claim the files and do it.`);
@@ -1752,6 +1866,89 @@ COMMANDS['hook-precompact'] = (args) => {
   logEvent(sid, 'precompact', `auto-checkpointed before ${trigger || 'compaction'} (${claims.length} claim(s) held)`);
 };
 
+// PreToolUse(Edit|Write|MultiEdit|NotebookEdit) guard — the defensive layer that
+// makes a clobber IMPOSSIBLE, not just discouraged. Before any edit lands on disk:
+//   • if another LIVE session holds (or prefix-covers) the file → DENY the edit
+//     with an actionable reason (coordinate / contest / pick another slice);
+//   • if the file is unclaimed → AUTO-CLAIM it for this session so the rest of the
+//     crew is protected too, even if this session never ran `claim`;
+//   • otherwise (already mine / no board / not a repo) → allow silently.
+// Modes via CLASSROOM_EDIT_GUARD: deny (default) · warn (advise, never block) · off.
+// Must be fast and crash-proof: any error or doubt → allow the edit.
+COMMANDS['hook-pre-edit'] = (args) => {
+  const allow = () => process.exit(0);
+  const mode = String(process.env.CLASSROOM_EDIT_GUARD || 'deny').toLowerCase();
+  if (mode === 'off') return allow();
+  let input = {};
+  if (!process.stdin.isTTY) { try { input = JSON.parse(fs.readFileSync(0, 'utf8')) || {}; } catch {} }
+  let r; try { r = repo(); } catch { return allow(); }
+  if (!r || !r.topLevel) return allow(); // not inside a git repo → nothing to coordinate
+  const ti = input.tool_input || {};
+  const rawPaths = [ti.file_path, ti.path, ti.notebook_path].filter((p) => typeof p === 'string' && p);
+  if (!rawPaths.length) return allow();
+  let outcome;
+  try {
+    ensureDirs();
+    reap();
+    const sid = (input.session_id ? String(input.session_id) : sessionId(args));
+    // normalize to repo-relative logical keys; ignore anything outside the repo.
+    const wants = rawPaths.map(normPath).filter((p) => p && p !== '.' && !p.startsWith('..'));
+    if (!wants.length) return allow();
+    const members = readMembers();
+    const conflicts = [];
+    for (const c of readClaims()) {
+      if (c.sid === sid) continue;
+      const owner = members.find((x) => x.sid === c.sid);
+      if (!isLive(owner)) continue;
+      for (const w of wants) if (pathsOverlap(w, c.path)) conflicts.push({ w, c, owner });
+    }
+    if (conflicts.length) {
+      const x = conflicts[0];
+      const who = label(x.owner);
+      const reason = `🔒 Claude Classroom: "${x.w}" is held by another LIVE session — ${who}`
+        + (x.c.intent ? ` (intent: ${x.c.intent})` : '') + '. '
+        + `Editing it now would clobber their work. Coordinate instead: `
+        + `\`classroom msg @${shortId(x.c.sid)} "..."\` or \`classroom ask\`, take a different slice, `
+        + `or if you're genuinely better-positioned \`classroom contest ${x.w} --confidence <0-100> --rationale "..."\` then retry. `
+        + `(Soften with CLASSROOM_EDIT_GUARD=warn, disable with =off.)`;
+      outcome = { conflict: true, reason };
+    } else {
+      // No conflict — auto-claim the unclaimed files so the crew is protected.
+      const mine = new Set(readClaims().filter((c) => c.sid === sid).map((c) => c.path));
+      const toClaim = wants.filter((w) => !mine.has(w));
+      if (toClaim.length) {
+        withLock(() => {
+          // re-scan under lock; bail per-path if someone grabbed it in the gap.
+          const live = readMembers();
+          const held = readClaims();
+          const d = DIRS();
+          for (const w of toClaim) {
+            const clash = held.some((c) => c.sid !== sid && isLive(live.find((x) => x.sid === c.sid)) && pathsOverlap(w, c.path));
+            if (clash) continue;
+            const dir = path.join(d.claims, claimKey(w));
+            try { fs.mkdirSync(dir); } catch {}
+            atomicWrite(path.join(dir, 'meta.json'), JSON.stringify({ path: w, sid, intent: 'auto (editing)', confidence: 50, rationale: '', createdAt: now() }, null, 2));
+          }
+        });
+        autoEnroll(sid); touch(sid);
+        logEvent(sid, 'auto-claimed', toClaim.join(', ') + ' (on edit)', { paths: toClaim });
+      }
+      outcome = { conflict: false };
+    }
+  } catch { return allow(); }
+  if (outcome && outcome.conflict) {
+    if (mode === 'warn') { try { process.stderr.write('⚠ ' + outcome.reason + '\n'); } catch {} return allow(); }
+    // deny mode: block the edit and hand the model an actionable reason.
+    try {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: outcome.reason },
+      }));
+    } catch {}
+    return process.exit(0);
+  }
+  return allow();
+};
+
 // Stop hook — the autonomous work loop. While a project is active, don't let a
 // session sit idle or stop to ask the user: keep it working (finish, take, pull,
 // review, help), and when there's genuinely nothing left for it, send it home.
@@ -1767,14 +1964,25 @@ COMMANDS['hook-stop'] = (args) => {
   const block = (reason) => process.stdout.write(JSON.stringify({ decision: 'block', reason }));
   const all = readTasks();
   const myTaken = all.find((t) => t.status === 'taken' && t.takenBy === sid);
+  const abandoned = all.find((t) => t.status === 'open' && t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid));
   const assigned = all.find((t) => t.status === 'open' && t.to === sid && !taskBlocked(t, all));
   let myReviews = []; try { myReviews = readReviews().filter((rv) => rv.status === 'requested' && rv.to === sid); } catch {}
-  const ready = all.filter((t) => t.status === 'open' && !t.to && !taskBlocked(t, all));
+  const ready = all.filter((t) => t.status === 'open' && !t.to && !t.abandoned && !taskBlocked(t, all));
   let action = null;
   if (myTaken) action = `finish your in-progress task "${myTaken.title}" [${myTaken.id}] — commit it, then \`classroom finish ${myTaken.id}\``;
+  else if (abandoned) action = `RESUME abandoned work "${abandoned.title}" [${abandoned.id}] — ${shortId(abandoned.abandonedBy)} started it then left it unfinished. Finish-the-job before anything new: \`classroom take ${abandoned.id}\` and complete it`;
   else if (assigned) action = `take your assignment "${assigned.title}" [${assigned.id}] (\`classroom take ${assigned.id}\`) and do it`;
   else if (myReviews.length) action = `do the review waiting on you [${myReviews[0].id}] — run tests/evals/e2e, then \`classroom verdict\``;
   else if (ready.length) { const b = ready.map((t) => ({ t, f: fitScore(m, t) })).sort((x, y) => y.f - x.f)[0]; action = `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`; }
+  if (!action) {
+    // a committed-but-unlanded branch with no live owner is unfinished work too —
+    // don't let the crew go home leaving a feature undeployed.
+    try {
+      const liveBranches = new Set(readMembers().filter(isLive).map((mm) => mm.branch));
+      const orphan = unlandedBranches().find((u) => !liveBranches.has(u.branch));
+      if (orphan) action = `an un-landed branch "${orphan.branch}" (+${orphan.ahead} commits, no live owner) was never merged/deployed — finish-the-job: \`git checkout ${orphan.branch}\`, rebase on ${mainRef() || 'main'}, verify, then \`classroom land\``;
+    } catch {}
+  }
   if (action) {
     if (m.idleStops || m.exiting) { m.idleStops = 0; m.exiting = false; writeMember(m); }
     return block(`Project "${proj.goal}" isn't done — do NOT stop or ask the user. ${action}. Re-survey first, work autonomously, commit atomically, then continue.`);
@@ -1886,14 +2094,17 @@ COMMANDS.install = (args) => {
   let settings = {};
   if (fs.existsSync(sf)) { try { settings = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch {} }
   settings.hooks = settings.hooks || {};
-  const addHook = (event, sub) => {
+  const addHook = (event, sub, matcher) => {
     settings.hooks[event] = settings.hooks[event] || [];
     if (!JSON.stringify(settings.hooks[event]).includes('classroom.js')) {
-      settings.hooks[event].push({ hooks: [{ type: 'command', command: cmd(sub) }] });
+      const entry = { hooks: [{ type: 'command', command: cmd(sub) }] };
+      if (matcher) entry.matcher = matcher;
+      settings.hooks[event].push(entry);
     }
   };
   addHook('SessionStart', 'hook-session-start');
   addHook('UserPromptSubmit', 'hook-user-prompt');
+  addHook('PreToolUse', 'hook-pre-edit', 'Edit|Write|MultiEdit|NotebookEdit');
   addHook('PreCompact', 'hook-precompact');
   addHook('Stop', 'hook-stop');
   fs.writeFileSync(sf, JSON.stringify(settings, null, 2));
@@ -1980,10 +2191,84 @@ COMMANDS.pull = (args) => {
   const all = readTasks();
   const open = all.filter((t) => t.status === 'open' && !taskBlocked(t, all) && (!t.to || t.to === sid));
   if (!open.length) { console.log('No ready tasks to pull. The backlog is clear.'); return; }
-  const best = open.map((t) => ({ t, fit: fitScore(me, t) })).sort((a, b) => b.fit - a.fit)[0];
-  console.log(`work-stealing best-fit task (fit ${best.fit}):`);
-  COMMANDS.take({ ...args, _: [best.t.id], fit: best.fit, rationale: 'work-steal: best-fit available task' });
+  // Finish-the-job: a started-then-abandoned task outranks any fresh one, so the
+  // crew goes back and completes dropped work before opening new fronts.
+  const best = open.map((t) => ({ t, fit: fitScore(me, t) + (t.abandoned ? 1000 : 0) })).sort((a, b) => b.fit - a.fit)[0];
+  console.log(best.t.abandoned
+    ? `resuming ABANDONED work first (was ${shortId(best.t.abandonedBy)}, fit ${best.fit - 1000}):`
+    : `work-stealing best-fit task (fit ${best.fit}):`);
+  COMMANDS.take({ ...args, _: [best.t.id], fit: best.t.abandoned ? (best.fit - 1000) : best.fit, rationale: best.t.abandoned ? 'finish-the-job: resuming abandoned work' : 'work-steal: best-fit available task' });
 };
+
+// ---------------------------------------------------------------------------
+// loose ends — started work that nobody finished/deployed. Priorities shift,
+// a session leaves mid-feature, a branch never lands; this surfaces all of it
+// so the crew goes back and CLOSES it out instead of silently leaving it.
+// ---------------------------------------------------------------------------
+function mainRef() {
+  return git(['rev-parse', '--verify', '--quiet', 'refs/heads/main']) ? 'main'
+    : git(['rev-parse', '--verify', '--quiet', 'refs/heads/master']) ? 'master' : null;
+}
+function unlandedBranches() {
+  const base = mainRef();
+  if (!base) return [];
+  const raw = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']);
+  if (!raw) return [];
+  const out = [];
+  for (const b of raw.split('\n').map((s) => s.trim()).filter(Boolean)) {
+    if (b === base) continue;
+    const ahead = parseInt(git(['rev-list', '--count', `${base}..${b}`]) || '0', 10);
+    if (ahead > 0) {
+      out.push({
+        branch: b, ahead,
+        lastTs: parseInt(git(['log', '-1', '--format=%ct', b]) || '0', 10) * 1000,
+        lastMsg: git(['log', '-1', '--format=%s', b]) || '',
+      });
+    }
+  }
+  return out.sort((a, b) => a.lastTs - b.lastTs);
+}
+function looseEnds(includeGit = true) {
+  const tasks = readTasks();
+  const liveSet = new Set(readMembers().filter(isLive).map((m) => m.sid));
+  const abandonedTasks = tasks.filter((t) => t.status === 'open' && t.abandoned);
+  const STALL_MS = parseInt(process.env.CLASSROOM_STALL_MIN || '90', 10) * 60 * 1000;
+  const stalledTasks = tasks.filter((t) => t.status === 'taken' && liveSet.has(t.takenBy) && t.takenAt && (now() - t.takenAt) > STALL_MS);
+  const unlanded = includeGit ? unlandedBranches() : [];
+  return { abandonedTasks, stalledTasks, unlanded };
+}
+COMMANDS['loose-ends'] = (args) => {
+  ensureDirs(); reap();
+  const sid = sessionId(args); autoEnroll(sid); touch(sid);
+  const { abandonedTasks, stalledTasks, unlanded } = looseEnds();
+  const members = readMembers();
+  const total = abandonedTasks.length + stalledTasks.length + unlanded.length;
+  if (!total) { console.log('✅ No loose ends — every started feature is finished or still actively owned.'); return; }
+  console.log(`🧵 LOOSE ENDS — started work that still needs finishing/deploying (${total}):\n`);
+  if (abandonedTasks.length) {
+    console.log('↻ ABANDONED tasks (owner left mid-flight — resume & finish):');
+    for (const t of abandonedTasks) console.log(`   [${t.id}] ${t.title}  — was ${shortId(t.abandonedBy)}, dropped ${rel(t.abandonedAt)}   → take ${t.id}`);
+    console.log('');
+  }
+  if (stalledTasks.length) {
+    console.log('⏳ STALLED tasks (taken but quiet a long time — nudge or take over):');
+    for (const t of stalledTasks) console.log(`   [${t.id}] ${t.title}  — held by ${shortId(t.takenBy)} since ${rel(t.takenAt)}`);
+    console.log('');
+  }
+  if (unlanded.length) {
+    console.log(`🚧 UN-LANDED branches (committed but never merged/deployed to ${mainRef() || 'main'}):`);
+    for (const u of unlanded) {
+      const owner = members.find((m) => m.branch === u.branch && isLive(m));
+      console.log(`   ${u.branch}  +${u.ahead} commit${u.ahead === 1 ? '' : 's'} · last ${rel(u.lastTs)} · ${owner ? 'owner ' + shortId(owner.sid) + ' (live)' : 'NO live owner'}`);
+      console.log(`       ↳ "${trunc(u.lastMsg, 64)}"   → checkout ${u.branch} && classroom land`);
+    }
+    console.log('');
+  }
+  console.log('Finish-the-job rule: clear loose ends BEFORE opening new fronts. `take <id>` to resume a task; check out an un-landed branch and `land` it.');
+};
+COMMANDS.unfinished = COMMANDS['loose-ends'];
+COMMANDS.loose = COMMANDS['loose-ends'];
+COMMANDS.finishup = COMMANDS['loose-ends'];
 
 // ---- land queue: serialize landing to main so branches don't race ----
 COMMANDS.landq = (args) => {
@@ -2093,9 +2378,10 @@ COMMANDS.adopt = (args) => {
       let s = {};
       if (fs.existsSync(sf)) { try { s = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch {} }
       s.hooks = s.hooks || {};
-      const add = (ev, sub) => { s.hooks[ev] = s.hooks[ev] || []; if (!JSON.stringify(s.hooks[ev]).includes('classroom.js')) s.hooks[ev].push({ hooks: [{ type: 'command', command: hookCmd(sub) }] }); };
+      const add = (ev, sub, matcher) => { s.hooks[ev] = s.hooks[ev] || []; if (!JSON.stringify(s.hooks[ev]).includes('classroom.js')) { const e = { hooks: [{ type: 'command', command: hookCmd(sub) }] }; if (matcher) e.matcher = matcher; s.hooks[ev].push(e); } };
       add('SessionStart', 'hook-session-start');
       add('UserPromptSubmit', 'hook-user-prompt');
+      add('PreToolUse', 'hook-pre-edit', 'Edit|Write|MultiEdit|NotebookEdit');
       add('PreCompact', 'hook-precompact');
       add('Stop', 'hook-stop');
       fs.writeFileSync(sf, JSON.stringify(s, null, 2));
@@ -2380,6 +2666,14 @@ COMMANDS.project = (args) => {
     if (!p) { console.error('✗ no active project.'); process.exit(1); }
     const open = readTasks().filter((t) => t.status === 'open' || t.status === 'taken').length;
     if (open && !args.force) { console.error(`✗ ${open} task(s) still open/in-progress — finish + verify them first, or --force.`); process.exit(1); }
+    // don't declare victory while started features sit committed-but-undeployed.
+    let unl = []; try { unl = unlandedBranches(); } catch {}
+    if (unl.length && !args.force) {
+      console.error(`✗ ${unl.length} branch(es) have committed work never landed to ${mainRef() || 'main'} — a feature isn't "done" until it's deployed:`);
+      for (const u of unl) console.error(`     ${u.branch} (+${u.ahead}, last ${rel(u.lastTs)})`);
+      console.error('   Land/merge them (`classroom loose-ends` lists everything), or --force to close anyway.');
+      process.exit(1);
+    }
     writeProject({ ...p, status: 'complete', completedBy: sid, completedAt: now() });
     writeMessage({ id: newId('m'), from: sid, to: 'all', text: `🎉 PROJECT COMPLETE: ${p.goal}`, ts: now() });
     logEvent(sid, 'project-done', p.goal);
@@ -2409,7 +2703,12 @@ COMMANDS.goal = (args) => {
   console.log(`🎯 PROJECT: ${p.goal}   [${p.status.toUpperCase()}]`);
   if (p.done) console.log(`   done when: ${p.done}`);
   console.log(`   backlog: ${open} open · ${doing} in progress · ${done} done`);
-  if (p.status === 'active') console.log(open + doing > 0 ? '   → keep going: pull/take open work, verify it, create follow-ups. Do NOT stop until empty + verified.' : '   → backlog clear. Verify everything (tests/evals/e2e + review), then `project done`.');
+  const le = looseEnds();
+  const loose = le.abandonedTasks.length + le.unlanded.length;
+  if (loose) {
+    console.log(`   🧵 ${loose} loose end(s): ${le.abandonedTasks.length} abandoned task(s) + ${le.unlanded.length} un-landed branch(es) — \`classroom loose-ends\` to finish them.`);
+  }
+  if (p.status === 'active') console.log((open + doing > 0 || loose) ? '   → keep going: finish loose ends FIRST, then pull/take open work, verify it. Do NOT stop until empty + verified + deployed.' : '   → backlog clear + nothing dangling. Verify everything (tests/evals/e2e + review), then `project done`.');
 };
 
 // ---- escalate to the overseer (the human) — ONE open at a time ----
@@ -2717,7 +3016,8 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   review "<what>" [--to a] [--branch b]   request peer review (routes to the area operator)
   reviews  ·  verdict <id> approve|changes|reject [--ran ".."] [--notes ".."]   do/answer reviews
   msg     <@agent|all> "<text>"           direct message another session (seen next turn)
-  pull                                    work-steal: take the best-fit unblocked task for you
+  pull                                    work-steal: take best-fit unblocked task (abandoned work first)
+  loose-ends | unfinished                 started-but-unfinished work: abandoned tasks + un-landed branches
   landq [release|status]                  serialize landing to main (one session lands at a time)
   sync    "<note>"                        post a standup note / finding to the shared feed
   split   <branch> [--base <ref>] [--no-link]   isolated worktree+branch (auto-links node_modules)

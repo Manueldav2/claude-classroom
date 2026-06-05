@@ -118,12 +118,24 @@ still protect a file across branches.
 
 ### 5. Work like a careful dev on a shared codebase
 - **Atomic commits**: one logical change per commit, tree always buildable.
+- **Ship the whole change together.** If your code lazily-imports a sibling
+  module or depends on a migration/generated file, commit *those in the same
+  commit (or same landing sequence)*. A deploy that ships the importer without
+  the imported module — or the code without its migration — breaks at runtime
+  even though each file looked fine alone. (Hard-won: a tier-2 deploy broke
+  exactly this way.)
 - **Surgical `git add`**: stage only the files you own. **Never `git add -A`** —
   other sessions have uncommitted work in a shared checkout.
 - **Follow team conventions** (§D) and **announce a risky/shared commit** (§E)
   before it lands.
 - Reuse patterns; read neighbouring code first. Re-`survey` + `claim` each new
   area; `release` files you finish.
+- **The edit-guard has your back.** Once installed, a PreToolUse hook blocks any
+  edit to a file another LIVE session holds (so you can't clobber them — it
+  happened once on a shared file), and auto-claims files you edit so the rest of
+  the crew is protected even if you forgot to `claim`. If an edit is denied,
+  don't fight it: coordinate (§B/§I) or take a different slice. Soften with
+  `CLASSROOM_EDIT_GUARD=warn`, disable with `=off`.
 
 ### 6. Sync — keep the others informed
 ```
@@ -377,6 +389,23 @@ AND verified** — never stop early. The rhythm:
 - Mark `project done` only when the definition of done is met and green.
 `goal` shows backlog progress any time. If the user says "don't stop until it's
 finished," that's this loop: build → verify → fix → repeat → done.
+
+### §M.1 Finish the job — started work must not be abandoned
+Priorities shift, a session leaves mid-feature, a branch gets committed but never
+merged — and the half-done work silently rots. The crew's rule: **clear loose
+ends before opening new fronts.**
+```
+classroom loose-ends      # abandoned tasks + un-landed branches, all in one view
+```
+- **Abandoned tasks** — a task someone `take`-d then left is auto-reopened and
+  **flagged abandoned**; `pull` resumes those *first*, and the dashboard marks
+  them `↻ resume`. Don't start something new while a started task dangles.
+- **Un-landed branches** — committed work that never reached `main` isn't
+  "done": a feature isn't finished until it's *deployed*. `project done` refuses
+  to close while un-landed branches exist (override with `--force`).
+- The autonomous loop (§P) routes idle sessions to finish abandoned tasks and
+  land orphaned branches before sending anyone home. "Done" means landed +
+  verified, not just written.
 
 ## §N. Context manages itself — you never run /compact
 Once installed, low-context handling is **automatic** — you don't get lazy and you

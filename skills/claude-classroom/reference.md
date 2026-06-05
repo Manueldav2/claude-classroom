@@ -112,6 +112,36 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.6.0 — edit-guard, finish-the-job, TUI upgrade (dogfooded on IDEX)
+Built while dogfooding the skill to fix a real IDEX bug (the tab-restore feed bug:
+SessionView.commitSubmission bailed on an empty line buffer, so arrow-key menu
+answers never re-expanded the feed — fixed with a pure, unit-tested
+`decideFeedOnSubmission` policy). The dogfooding surfaced + drove these tool changes:
+
+- **PreToolUse edit-guard (`hook-pre-edit`)** — makes a clobber IMPOSSIBLE, not just
+  discouraged. Before any Edit/Write/MultiEdit/NotebookEdit: another LIVE session
+  holds the file (prefix-aware) → **deny** with an actionable reason; unclaimed →
+  **auto-claim** for this session so the crew is protected even if it never ran
+  `claim`; mine/no-board → allow. Modes via `CLASSROOM_EDIT_GUARD`: deny (default) ·
+  warn · off. Registered in install + adopt, matcher `Edit|Write|MultiEdit|NotebookEdit`.
+- **Symlink-robust paths** — `realpathSafe()` resolves symlinked repo roots (macOS
+  /var→/private/var, symlinked checkouts) on the longest existing prefix so one
+  logical file can't map to two claim keys (had silently let the guard skip a
+  clobber). `normPath` uses it.
+- **Finish-the-job / loose ends** — started work no longer rots when priorities
+  shift. `reap()` flags dead-owner tasks `abandoned` (reopened, not lost);
+  `loose-ends`/`unfinished` lists abandoned tasks + stalled taken tasks + **un-landed
+  branches** (committed but never deployed); `pull` resumes abandoned work FIRST
+  (+1000 fit); the Stop-loop routes idle sessions to finish abandoned tasks + land
+  orphaned branches before going home; `project done` REFUSES while un-landed
+  branches exist ("not done until deployed").
+- **`take` no longer hard-locks on `--to`** — routed-to-a-departed-session task is
+  adopted; routed-to-a-live-peer needs a fit-based takeover (mirrors `taken`).
+- **TUI upgrade** — per-agent ctx **gauges** (color by headroom), 🔒 **CLAIMS
+  collision map**, 📋 **BACKLOG** (effort chips + assignees + ↻ resume), 🔎 **REVIEW
+  QUEUE**, project **progress bar**, 🧵 to-finish count, height-aware density,
+  expanded KEY legend.
+
 ## v2.5.2 — stop asking the founder coordination/ratification questions
 - Behavioral fix: sessions were asking the human to ratify a division of labor they'd
   already coordinated, or to pick between approaches they could test. SKILL.md now has
