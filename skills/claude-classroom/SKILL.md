@@ -423,26 +423,23 @@ classroom loose-ends      # abandoned tasks + un-landed branches, all in one vie
   the same item (and respects `stop_hook_active`), so it can never trap you in a
   loop. If a nudge is wrong, just stop; if it's about a branch, `park` it.
 
-## §N. Context manages itself — you never run /compact
-Once installed, low-context handling is **automatic** — you don't get lazy and you
-don't type `/compact`:
+## §N. Don't think about compaction at all — it's fully automatic
+**Never stop working to prepare for compaction, and never run `/compact`.** Compaction
+is completely automatic and invisible:
 - Claude Code **auto-compacts** when the context fills (~95%).
 - A **PreCompact hook auto-checkpoints** your task + claims + branch + uncommitted
   state to the board right before it — your claims stay held.
 - After compaction the **SessionStart hook re-injects your checkpoint**, so you
   resume exactly where you were and keep going.
 
-Your only jobs:
-- When the per-turn hook says context is ~full (it reads your *real* usage),
-  **finish and commit your current atomic step** so nothing's lost.
-- Optionally `classroom checkpoint "<where you are>" --next "<what's left>"` to leave
-  richer resume notes than the automatic one (the auto-checkpoint keeps a manual one
-  if it's recent).
-- Use `checkpoint --handoff` if you'd rather a teammate continue it than resume
-  yourself. `classroom resume` reprints your checkpoint any time.
-
-Do **not** run `/compact` — let auto-compaction handle it; the project never stalls
-and nothing is lost.
+So you have **zero compaction chores**. Just keep building until the moment it
+compacts; you'll wake up oriented and carry on. The per-turn hook tracks your real
+context usage **silently** (only to draw the dashboard ctx gauge) — it will NOT tell
+you to checkpoint or compact, because stopping to babysit context is the very thing
+that wastes it. Don't announce "context is getting low, let me checkpoint" and pause —
+just work. (`classroom checkpoint`/`resume` still exist if you ever *want* to leave
+richer handoff notes, and `--handoff` passes work to a teammate — but they're optional,
+never required.)
 
 ## §O. The overseer model — decide, verify, escalate sparingly
 The human is the **overseer**, working on the highest-value things — protect their

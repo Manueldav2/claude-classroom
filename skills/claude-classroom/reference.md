@@ -112,6 +112,25 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.6.4 — stop "just stopping": no compaction babysitting + stalled-handoff recovery
+Two user reports: (1) sessions stop working to PREP for compaction (checkpoint/nag) instead
+of just working until auto-compact — "make it not worry about compaction"; (2) a session at
+its context limit `recruit`ed a worker that enrolled, said "claiming files now," then stalled
+and produced nothing — and nobody caught it (the project had a goal but NO task, so the board
+thought there was no work).
+- **Compaction is now fully silent.** `hook-user-prompt` no longer prints "🔴 CONTEXT FULL —
+  checkpoint now" / "⚠ headroom low" nags. It tracks real usage only to draw the dashboard ctx
+  gauge. PreCompact auto-checkpoints + SessionStart re-injects, so sessions have ZERO compaction
+  chores — they just keep working. (Re-enable a gentle one-liner with CLASSROOM_COMPACT_WARN=1.)
+  `checkpoint` output no longer says "now you can /compact"; SKILL §N rewritten to "don't think
+  about compaction at all."
+- **recruit seeds a tracked task** from the project goal when the backlog is empty, so a worker
+  takes concrete work; if it stalls (enrolls→claims→goes quiet) reap reopens it as abandoned →
+  visible (`🧵 to finish`) + reclaimable, instead of dying silently.
+- **Stop hook demands decomposition, never falsely stands down on an undecomposed goal.** Active
+  project + zero tasks → "break the goal into tasks and BUILD it" (sig 'decompose'), not the
+  v2.6.3 clean stand-down. Verified: zero-task project → decompose nudge; task exists → pull nudge.
+
 ## v2.6.3 — founder-gated stand-down (stop nagging when only the founder can unblock)
 User report: a session finished everything it could autonomously (the rest needed LLM
 keys + one irreversible-publish confirmation) but the Stop hook kept nagging it through

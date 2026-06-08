@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.6.3';
+const VERSION = '2.6.4';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -2075,6 +2075,14 @@ COMMANDS['hook-stop'] = (args) => {
         : `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`;
     sig = 'pull:' + b.t.id;
   }
+  else if (!all.length && !readReviews().filter((rv) => rv.status === 'requested').length) {
+    // Active project but ZERO tasks ever created — the goal was never decomposed, so
+    // the work exists, it's just not on the board. Building it IS the job; do NOT
+    // mistake an empty board for "done" and stand down. (This is how a recruited
+    // worker that posted "starting…" then stalled used to leave nothing behind.)
+    action = `the project "${proj.goal}" has NO tasks on the board yet — the goal isn't broken down, so there is REAL work and you must not stop. Decompose it now: \`classroom mission "<goal>"\` (or \`delegate "<piece>"\` a few concrete pieces), then \`take\` one, claim the files, and BUILD it. Only if it genuinely needs the founder: \`classroom project await "<why>"\`.`;
+    sig = 'decompose';
+  }
   // NOTE: un-landed orphan branches are deliberately NOT a stop-block. Landing
   // someone else's branch is a judgment call that can be DESTRUCTIVE (it can
   // revert production). They're surfaced by `loose-ends`, the dashboard, and the
@@ -2166,20 +2174,20 @@ COMMANDS['hook-user-prompt'] = (args) => {
   if (!process.stdin.isTTY) {
     try { const inp = fs.readFileSync(0, 'utf8'); if (inp) { const j = JSON.parse(inp); if (j.transcript_path) est = estimateContext(j.transcript_path); } } catch {}
   }
+  // Track REAL context usage SILENTLY — only so the dashboard ctx gauge is accurate.
+  // We deliberately do NOT warn the session about compaction or tell it to checkpoint:
+  // the PreCompact hook auto-checkpoints task+claims+uncommitted before ANY compaction
+  // and SessionStart(source=compact) re-injects them afterward, so compaction is fully
+  // automatic and invisible. Nagging just made sessions stop working to prep for it —
+  // the opposite of what we want. (Set CLASSROOM_COMPACT_WARN=1 to re-enable a warning.)
   if (est) { m.headroom = Math.max(0, 100 - est.pct); writeMember(m); }
-  const headroom = m.headroom ?? 100;
-  const threshold = parseInt(process.env.CLASSROOM_COMPACT_AT || '25', 10);
-  const sinceNudge = now() - (m.compactNudgedAt || 0);
-  if (headroom <= 12 && sinceNudge > 90 * 1000) {
-    // near full → Claude Code will auto-compact; we just make sure state is captured
-    // first (PreCompact also auto-checkpoints). No manual /compact needed.
-    m.compactNudgedAt = now(); writeMember(m);
-    console.log(`🔴 CONTEXT ~${100 - headroom}% FULL — auto-compaction is imminent. You do NOT need to run /compact.`);
-    console.log('   Just finish + COMMIT your current atomic step now, and leave good resume notes:');
-    console.log('   classroom checkpoint "<where you are>" --next "<what\'s left>"   (claims + task survive; you\'ll be re-oriented automatically after the compaction).');
-  } else if (headroom <= threshold && sinceNudge > 5 * 60 * 1000) {
-    m.compactNudgedAt = now(); writeMember(m);
-    console.log(`⚠ Context headroom ~${headroom}% — getting low. Commit your current step and \`classroom checkpoint\` soon; auto-compaction will handle the rest (no /compact needed).`);
+  if (process.env.CLASSROOM_COMPACT_WARN === '1' && est) {
+    const headroom = m.headroom ?? 100;
+    const sinceNudge = now() - (m.compactNudgedAt || 0);
+    if (headroom <= 8 && sinceNudge > 5 * 60 * 1000) {
+      m.compactNudgedAt = now(); writeMember(m);
+      console.log(`(context ~${100 - headroom}% full — auto-compaction will handle it; keep working, no /compact needed.)`);
+    }
   }
   COMMANDS.since({ _: [], quiet: true });
 };
@@ -2835,7 +2843,7 @@ COMMANDS.checkpoint = (args) => {
   }
   meshAuto();
   console.log('✔ checkpoint saved (task, claims, and next steps preserved on the board).');
-  console.log('  Your claims stay held through compaction. Now you can safely /compact — then run `classroom resume` to reload.');
+  console.log('  Optional — you do NOT need this for compaction (that\'s automatic). Just keep working; `classroom resume` reprints it any time.');
   if (args.handoff) console.log('  Also posted as an open task so a teammate can pick it up if you don\'t come back.');
 };
 
@@ -3014,6 +3022,19 @@ COMMANDS.recruit = (args) => {
   const n = Math.max(1, Math.min(parseInt(args._[0] || args.n || '2', 10) || 2, 6));
   const proj = readProject();
   const goal = (proj && proj.status === 'active') ? proj.goal : (args.goal || 'help the classroom clear the open backlog');
+  // Make the work TRACKED before spawning: if the active project has no open task,
+  // seed one from the goal so the worker TAKES a real task. Then if the worker
+  // stalls (enrolls, claims, posts "starting…", goes quiet), reap reopens it as
+  // abandoned — visible on the board and reclaimable — instead of dying silently.
+  if (proj && proj.status === 'active') {
+    const openNow = readTasks().filter((t) => (t.status === 'open' || t.status === 'taken') && !t.needsFounder);
+    if (!openNow.length) {
+      const seeded = { id: newTaskId(), title: trunc(goal, 140), area: args.area || null, reason: 'auto-seeded so recruited workers have a tracked task', effort: 'high', to: null, createdBy: sid, status: 'open', takenBy: null, rationale: null, blockedBy: [], createdAt: now() };
+      writeTask(seeded);
+      logEvent(sid, 'delegated', `[${seeded.id}] ${seeded.title} (auto-seeded for recruits)`, { task: seeded.id });
+      console.log(`  seeded task [${seeded.id}] from the goal so the work is tracked + reclaimable if a worker stalls.`);
+    }
+  }
   const model = args.model || 'sonnet';
   const perm = args.safe ? 'acceptEdits' : 'bypassPermissions';
   const { spawn } = require('child_process');
