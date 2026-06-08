@@ -501,6 +501,18 @@ When a `project` is active you run **autonomously** — the human just gives the
   `recruit`-ed one) pulls them. So work never stalls because the assignee went away.
 - **When there's genuinely nothing left for you** (backlog empty + claims clear), the
   loop sends you home — `classroom done` and exit. No hanging around.
+- **Founder-gated work ≠ autonomous work — don't churn on it.** If the only thing
+  left needs the founder (API keys, an irreversible confirmation, a product
+  decision), it is NOT something to keep "being useful" about. Mark it so the loop
+  knows and stands down cleanly instead of nagging:
+  - per task: `delegate "…" --needs-founder` (or `needs <id> "<why>"` on an existing
+    one) — it's excluded from autonomous work and surfaced under ⏳ for the founder.
+  - whole project: when the crew has taken it as far as it can without the founder,
+    `project await "<exactly what you need from the founder>"` — this stands the
+    **entire crew** down (the Stop loop goes quiet, the dashboard shows ⏸ AWAITING
+    FOUNDER). `project resume` when they've unblocked you.
+  Done means "shipped + verified" OR "everything autonomous is done and the rest is
+  explicitly handed to the founder" — never an endless idle loop.
 
 **Summon more hands:** `classroom recruit [n]` spawns *n* fresh worker sessions that
 enroll and grind the project autonomously, then exit when done. (Already-running

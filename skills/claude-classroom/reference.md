@@ -112,6 +112,24 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.6.3 — founder-gated stand-down (stop nagging when only the founder can unblock)
+User report: a session finished everything it could autonomously (the rest needed LLM
+keys + one irreversible-publish confirmation) but the Stop hook kept nagging it through
+idle rounds because the project was still `active`. Now the loop distinguishes
+autonomous work from founder-gated work and stands down cleanly:
+- **`needs <id> [reason]` / `delegate --needs-founder`** mark a task as founder-gated
+  (needs keys / a confirmation / a decision). Such tasks are EXCLUDED from `ready`/
+  `abandoned`/`assigned` and from "is there crew work left?" — they never keep a
+  session churning. Surfaced under `⏳ N for founder` (BOARD strip) + in `goal`.
+- **Stop hook clean stand-down**: when no autonomous crew work remains (all open tasks
+  are founder-gated or done, no pending reviews), the session wraps up in ONE step
+  (release claims → `done`) and is told which items await the founder — instead of
+  3 idle "be useful" rounds. Verified: 1 nudge then ALLOW STOP.
+- **`project await "<what you need>"` / `project resume`**: stands the WHOLE crew down
+  (status `awaiting` → Stop hook silent, since it only runs while status==='active');
+  dashboard shows `⏸ AWAITING FOUNDER · needs: …`. The explicit "we've taken it as far
+  as we can without you" signal.
+
 ## v2.6.2 — height-fit TUI + delivery guarantee (work/messages can't vanish)
 Two user reports: (1) the `watch` TUI overflowed the terminal so the top (header +
 agent names) scrolled off; (2) sessions don't actually work — they hand off to a

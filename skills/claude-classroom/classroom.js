@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.6.2';
+const VERSION = '2.6.3';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -682,14 +682,17 @@ function renderDashboard(meSid, tick = 0) {
     + (ghosts.length ? DIM + '  +' + ghosts.length + ' detected' + RESET : '') + '   ' + dots);
   header.push(divider);
   for (const e of openEsc) header.push('  ' + fg(196) + BOLD + '🚨 NEEDS YOU' + RESET + '  ' + C(e.by) + disp(e.by).name + RESET + ' asks: ' + fg(231) + trunc(e.q, W - 22) + RESET);
-  if (proj && proj.status === 'active') {
+  if (proj && proj.status === 'awaiting') {
+    header.push('  ' + fg(244) + BOLD + '⏸ AWAITING FOUNDER' + RESET + DIM + '  ' + trunc(proj.goal, W - 44) + RESET
+      + (proj.awaitReason ? '  ' + fg(214) + 'needs: ' + trunc(proj.awaitReason, 30) + RESET : ''));
+  } else if (proj && proj.status === 'active') {
     const o = allTasks.filter((t) => t.status === 'open').length, dn = allTasks.filter((t) => t.status === 'done').length, dg = allTasks.filter((t) => t.status === 'taken').length;
     const tot = o + dn + dg;
     header.push('  ' + fg(213) + '🎯 ' + BOLD + trunc(proj.goal, W - 50) + RESET
       + '  ' + progressBar(dn, tot, 12) + DIM + ' ' + dn + '/' + tot + RESET
       + DIM + '   ' + o + ' open · ' + dg + ' doing · ' + dn + ' done' + RESET);
   }
-  if (openEsc.length || (proj && proj.status === 'active')) header.push(divider);
+  if (openEsc.length || (proj && (proj.status === 'active' || proj.status === 'awaiting'))) header.push(divider);
 
   // ── FOOTER (always rendered) ──
   const allT = allTasks;
@@ -703,6 +706,8 @@ function renderDashboard(meSid, tick = 0) {
   board.push(fg(203) + '🔒 ' + liveClaims.length + ' claims' + RESET);
   board.push(fg(45) + '📋 ' + openTasks + ' tasks' + (blocked ? ' (+' + blocked + ' blocked)' : '') + RESET);
   if (looseN) board.push(fg(208) + '🧵 ' + looseN + ' to finish' + RESET);
+  const gatedN = allT.filter((t) => (t.status === 'open' || t.status === 'taken') && t.needsFounder).length;
+  if (gatedN) board.push(fg(214) + '⏳ ' + gatedN + ' for founder' + RESET);
   if (reviewsQ.length) board.push(fg(118) + '🔎 ' + reviewsQ.length + ' review' + (reviewsQ.length === 1 ? '' : 's') + RESET);
   if (convs.length) board.push(fg(220) + '📐 ' + convs.length + ' rules' + RESET);
   if (operators) board.push(fg(141) + '⬡ ' + operators + ' operators' + RESET);
@@ -1441,10 +1446,11 @@ COMMANDS.delegate = (args) => {
     effort: args.effort || 'low', to, createdBy: sid,
     status: 'open', takenBy: null, rationale: null, blockedBy,
     mission: args.mission || null, afterCommit: !!args['after-commit'], createdAt: now(),
+    needsFounder: !!args['needs-founder'],
   };
   writeTask(t);
-  logEvent(sid, 'delegated', `[${t.id}] ${title}${t.reason ? ' — ' + t.reason : ''}${blockedBy.length ? ' (blocked by ' + blockedBy.join(',') + ')' : ''}`, { task: t.id });
-  console.log(`✔ delegated [${t.id}] "${title}" (effort:${t.effort}${t.to ? ', to ' + shortId(t.to) : ', open to anyone'}${blockedBy.length ? ', blocked by ' + blockedBy.join(',') : ''}).`);
+  logEvent(sid, 'delegated', `[${t.id}] ${title}${t.needsFounder ? ' (needs founder)' : ''}${t.reason ? ' — ' + t.reason : ''}${blockedBy.length ? ' (blocked by ' + blockedBy.join(',') + ')' : ''}`, { task: t.id });
+  console.log(`✔ delegated [${t.id}] "${title}" (effort:${t.effort}${t.needsFounder ? ', NEEDS FOUNDER (not autonomous)' : t.to ? ', to ' + shortId(t.to) : ', open to anyone'}${blockedBy.length ? ', blocked by ' + blockedBy.join(',') : ''}).`);
   if (!blockedBy.length) console.log(`  Others see it via \`offers\` and claim it with \`take ${t.id}\`.`);
 };
 
@@ -2046,13 +2052,14 @@ COMMANDS['hook-stop'] = (args) => {
   const all = readTasks();
   const liveSet = new Set(readMembers().filter(isLive).map((x) => x.sid));
   const myTaken = all.find((t) => t.status === 'taken' && t.takenBy === sid);
-  const abandoned = all.find((t) => t.status === 'open' && t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
-  const assigned = all.find((t) => t.status === 'open' && t.to === sid && !taskBlocked(t, all));
+  const abandoned = all.find((t) => t.status === 'open' && t.abandoned && !t.needsFounder && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
+  const assigned = all.find((t) => t.status === 'open' && t.to === sid && !t.needsFounder && !taskBlocked(t, all));
   let myReviews = []; try { myReviews = readReviews().filter((rv) => rv.status === 'requested' && rv.to === sid); } catch {}
   // ready = open work this session can pick up: unrouted, mine, OR routed to a
   // session that isn't live (a handoff to a non-running session — reclaim it so it
-  // doesn't black-hole). This is the core "make not-working impossible" lever.
-  const ready = all.filter((t) => t.status === 'open' && !t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
+  // doesn't black-hole). Founder-gated tasks are excluded — they're NOT autonomous
+  // work, so they must never keep a session churning. This is the core lever.
+  const ready = all.filter((t) => t.status === 'open' && !t.abandoned && !t.needsFounder && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
   let action = null, sig = null;
   if (myTaken) { action = `finish your in-progress task "${myTaken.title}" [${myTaken.id}] — commit it, then \`classroom finish ${myTaken.id}\``; sig = 'task:' + myTaken.id; }
   else if (abandoned) { action = `RESUME abandoned work "${abandoned.title}" [${abandoned.id}] — ${shortId(abandoned.abandonedBy)} started it then left it unfinished. Finish-the-job before anything new: \`classroom take ${abandoned.id}\` and complete it`; sig = 'abandon:' + abandoned.id; }
@@ -2094,12 +2101,33 @@ COMMANDS['hook-stop'] = (args) => {
     return block(`Project "${proj.goal}" isn't done — do NOT stop or ask the user. ${action}. Re-survey first, work autonomously, commit atomically, then continue. (If this nudge is wrong — e.g. it pushes a destructive merge — just stop: this hook backs off after ${MAX_BLOCKS} repeats. Park a branch you intentionally won't land with \`classroom park <branch>\`.)`);
   }
   if (m.lastStopSig || m.stopRepeat || m.releasedSig) { m.lastStopSig = null; m.stopRepeat = 0; m.releasedSig = null; writeMember(m); }
-  // nothing directly claimable — be useful, then leave if persistently idle
+  const claimsHeld = readClaims().filter((c) => c.sid === sid).length;
+  // Is there ANY autonomously-doable work left for the crew? (open non-founder-gated
+  // tasks, in-progress tasks, or pending reviews.) Founder-gated/awaiting items don't
+  // count — the crew can't action them, so they must NOT keep anyone churning.
+  const crewWork = all.some((t) => (t.status === 'open' && !t.needsFounder && !taskBlocked(t, all)) || t.status === 'taken');
+  let openReviews = []; try { openReviews = readReviews().filter((rv) => rv.status === 'requested'); } catch {}
+  if (!crewWork && !openReviews.length) {
+    // The crew has taken the project as far as it can WITHOUT the founder. Stand
+    // down cleanly in ONE step — no idle-round churn, no nagging the human.
+    if (claimsHeld) return block(`Your work is done and there's no autonomous work left on "${proj.goal}" — release your ${claimsHeld} stale claim(s) (\`classroom release\`) and run \`classroom done\`, then stop.`);
+    if (!m.exiting) {
+      m.exiting = true; writeMember(m);
+      const gated = all.filter((t) => t.status === 'open' && t.needsFounder).length;
+      let openEscN = 0; try { openEscN = readEscalations().filter((e) => e.status === 'open').length; } catch {}
+      const pend = gated + openEscN;
+      const tail = pend
+        ? ` ${pend} item(s) now await the FOUNDER (keys / a confirmation / a decision). Make sure each is on the board (\`escalate "..."\` or \`delegate "..." --needs-founder\`) so the founder sees it — OR run \`project await "<what you need from the founder>"\` to stand the whole crew down — then \`classroom done\`.`
+        : ' Mark it finished with `project done`, then `classroom done`.';
+      return block(`Nothing autonomous left for the crew on "${proj.goal}".${tail} Run \`classroom done\` and stop — do NOT keep re-checking.`);
+    }
+    return; // acknowledged → allow the stop, silently
+  }
+  // There IS autonomous crew work, just not pre-assigned to you → be useful (bounded).
   const idle = (m.idleStops || 0) + 1; m.idleStops = idle; writeMember(m);
   const MAX = parseInt(process.env.CLASSROOM_IDLE_EXITS || '3', 10);
-  const claimsHeld = readClaims().filter((c) => c.sid === sid).length;
   if (idle < MAX) {
-    return block(`Project "${proj.goal}" isn't done and you have no claimed task — but DON'T wait around or ask the user. Be useful: re-survey, check \`offers\` and \`reviews\`, OFFER to review/test a teammate's branch, help the lowest-headroom operator take a slice, or create the next needed task and do it. Then re-check. (idle ${idle}/${MAX})`);
+    return block(`"${proj.goal}" still has open work — DON'T idle or ask the user: re-survey, check \`offers\`/\`reviews\`, review or test a teammate's branch, or \`pull\` the next task and do it. (idle ${idle}/${MAX})`);
   }
   if (claimsHeld) return block(`No task for ${idle} checks but you still hold ${claimsHeld} claim(s) — finish + land them or \`classroom release\` them, then you may leave.`);
   if (!m.exiting) { m.exiting = true; writeMember(m); return block(`Nothing left for you and your claims are clear. Run \`classroom done\` to leave the classroom — then you're free to stop. 👋 (class dismissed for you)`); }
@@ -2389,6 +2417,26 @@ COMMANDS['loose-ends'] = (args) => {
 COMMANDS.unfinished = COMMANDS['loose-ends'];
 COMMANDS.loose = COMMANDS['loose-ends'];
 COMMANDS.finishup = COMMANDS['loose-ends'];
+
+// needs — mark an existing task as FOUNDER-GATED (needs keys / a confirmation / a
+// decision only the founder can give). Founder-gated tasks are NOT autonomous work:
+// they don't keep the Stop loop churning, and they're surfaced for the founder.
+// `needs <id> --off` clears it.
+COMMANDS.needs = (args) => {
+  ensureDirs();
+  const sid = sessionId(args); autoEnroll(sid); touch(sid);
+  const id = args._[0] || args.id;
+  if (!id) { console.error('✗ usage: needs <taskId> [reason]   (mark a task as needing the founder; --off to clear)'); process.exit(2); }
+  const t = getTask(id);
+  if (!t) { console.error('✗ no such task'); process.exit(1); }
+  const off = !!args.off;
+  const reason = args._.slice(1).join(' ') || args.reason || '';
+  writeTask({ ...t, needsFounder: !off, founderReason: off ? null : (reason || t.founderReason || '') });
+  logEvent(sid, 'needs-founder', `[${t.id}] ${off ? 'cleared' : 'needs founder'}${reason ? ' — ' + reason : ''}`, { task: t.id });
+  console.log(off
+    ? `✔ [${t.id}] is autonomous again — back in the crew's queue.`
+    : `✔ [${t.id}] marked NEEDS FOUNDER${reason ? ': ' + reason : ''} — it won't keep the crew churning; it'll be surfaced for the founder.`);
+};
 
 // park — mark a branch as INTENTIONALLY not landing, so the finish-the-job
 // machinery stops flagging it. The escape valve for "this work mustn't merge"
@@ -2843,6 +2891,31 @@ COMMANDS.project = (args) => {
     console.log(`🎉 project marked complete: ${p.goal}`);
     return;
   }
+  // await — the crew has taken it as far as it can WITHOUT the founder. Stands the
+  // whole crew down (Stop loop goes quiet) and records what's needed, so nobody
+  // keeps churning on work that only the founder can unblock. `resume` re-activates.
+  if (sub === 'await' || sub === 'pause' || sub === 'blocked') {
+    const p = readProject();
+    if (!p) { console.error('✗ no active project.'); process.exit(1); }
+    const why = args._.slice(1).join(' ').trim() || args.reason || args.why || '';
+    writeProject({ ...p, status: 'awaiting', awaitReason: why, awaitedBy: sid, awaitedAt: now() });
+    writeMessage({ id: newId('m'), from: sid, to: 'all', text: `⏸ PROJECT AWAITING FOUNDER: ${p.goal}${why ? ' — needs: ' + why : ''}`, ts: now() });
+    logEvent(sid, 'project-await', why || '(awaiting founder)');
+    meshAuto && meshAuto();
+    console.log(`⏸ project set to AWAITING FOUNDER — the crew stands down (no more autonomous nagging).${why ? '\n   Needs from founder: ' + why : ''}`);
+    console.log('   Resume anytime with `classroom project resume`.');
+    return;
+  }
+  if (sub === 'resume') {
+    const p = readProject();
+    if (!p) { console.error('✗ no project to resume.'); process.exit(1); }
+    writeProject({ ...p, status: 'active', awaitReason: null });
+    writeMessage({ id: newId('m'), from: sid, to: 'all', text: `▶️ PROJECT RESUMED: ${p.goal} — back to work.`, ts: now() });
+    logEvent(sid, 'project-resume', p.goal);
+    meshAuto && meshAuto();
+    console.log(`▶️ project resumed — the crew is back on "${p.goal}".`);
+    return;
+  }
   const goal = args._.join(' ').trim() || args.goal || '';
   if (!goal) { COMMANDS.goal(args); return; }
   const p = { id: newId('P'), goal, done: args.done || '', by: sid, status: 'active', createdAt: now() };
@@ -2866,12 +2939,24 @@ COMMANDS.goal = (args) => {
   console.log(`🎯 PROJECT: ${p.goal}   [${p.status.toUpperCase()}]`);
   if (p.done) console.log(`   done when: ${p.done}`);
   console.log(`   backlog: ${open} open · ${doing} in progress · ${done} done`);
+  const gated = all.filter((t) => (t.status === 'open' || t.status === 'taken') && t.needsFounder);
+  if (gated.length) console.log(`   ⏳ ${gated.length} item(s) need the FOUNDER (not autonomous): ${gated.map((t) => '[' + t.id + '] ' + trunc(t.title, 40)).join('; ')}`);
   const le = looseEnds();
   const loose = le.abandonedTasks.length + le.unlanded.length;
   if (loose) {
     console.log(`   🧵 ${loose} loose end(s): ${le.abandonedTasks.length} abandoned task(s) + ${le.unlanded.length} un-landed branch(es) — \`classroom loose-ends\` to finish them.`);
   }
-  if (p.status === 'active') console.log((open + doing > 0 || loose) ? '   → keep going: finish loose ends FIRST, then pull/take open work, verify it. Do NOT stop until empty + verified + deployed.' : '   → backlog clear + nothing dangling. Verify everything (tests/evals/e2e + review), then `project done`.');
+  if (p.status === 'awaiting') {
+    console.log(`   ⏸ AWAITING FOUNDER${p.awaitReason ? ': ' + p.awaitReason : ''} — the crew is stood down. \`classroom project resume\` to restart.`);
+    return;
+  }
+  // autonomous work remaining = open non-founder-gated tasks or in-progress
+  const autoOpen = all.filter((t) => t.status === 'open' && !t.needsFounder).length;
+  if (p.status === 'active') {
+    if (autoOpen + doing > 0 || loose) console.log('   → keep going: finish loose ends FIRST, then pull/take open work, verify it. Do NOT stop until empty + verified + deployed.');
+    else if (gated.length) console.log('   → all autonomous work is DONE; only founder-gated items remain. `project await "<what you need>"` to stand the crew down, or `project done` if truly finished.');
+    else console.log('   → backlog clear + nothing dangling. Verify everything (tests/evals/e2e + review), then `project done`.');
+  }
 };
 
 // ---- escalate to the overseer (the human) — ONE open at a time ----
@@ -3172,6 +3257,8 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   proposal <id>                           check a proposal's status before you commit
   withdraw <id> [--committed]             close your proposal
   project "<goal>" [--done ".."] | goal   set a long-running project + see backlog progress
+  project await "<needs founder>" | resume  stand the crew down on founder-gated work / restart
+  needs <id> [reason] [--off]             mark a task as needing the founder (not autonomous work)
   mission "<goal>"                        broadcast a group goal; then partition it across teammates
   checkpoint "<where I am>" [--next ..] [--handoff]   save state so you can /compact then resume
   resume                                  reload your task/claims/next-steps after a compaction
