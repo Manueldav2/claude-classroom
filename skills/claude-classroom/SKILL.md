@@ -321,7 +321,15 @@ initiator you're the conductor for that mission, not the sole worker.
 ## §I. Talk to each other & balance load
 - **Direct message** a specific session: `msg <@agent|sid|all> "…"` (e.g.
   `msg @DRACO "can you expose getX() from api.py?"`) — delivered at their next turn.
-- **Work‑steal**: an idle session runs `pull` to grab the best‑fit unblocked task.
+- **Only LIVE sessions count.** `msg`/`ask`/`delegate --to` aimed at a session that
+  isn't running are refused (or fall back to open‑to‑anyone) — work and questions
+  never vanish into a session that was never spun up. If the target isn't live, the
+  CLI tells you who *is* live and to `recruit` a worker or post it open.
+- **Don't hand work to a phantom.** Before you delegate/route to a teammate, they
+  must be live. Handing a task to a non‑running session = it never gets done. Route
+  to a live operator, post it open (`delegate "…"` no `--to`), or `recruit`.
+- **Work‑steal**: an idle session runs `pull` to grab the best‑fit unblocked task —
+  including tasks that were handed to a now‑offline session (they're reclaimable).
 - **Land queue**: when several branches are green, `landq` serializes landing so
   they don't race to main (`landq release` when merged).
 
@@ -482,6 +490,15 @@ When a `project` is active you run **autonomously** — the human just gives the
 - **Decide with evidence** (run/eval/e2e); if you'd say "the eval will decide," then
   run it — don't ask. `escalate` only decisions the founder UNIQUELY owns (one at a
   time): ambiguous product intent, irreversible/cost calls, untestable forks.
+- **Don't post-and-vanish.** "I'm low on context, I'll just post it" is NOT done.
+  If you delegate work, a **live** session must pick it up — verify it, or take it
+  back yourself. The Stop hook catches this: if you posted a task nobody live is
+  working, it tells you to take it back. Low on context? Compaction is automatic
+  (§N); if you must hand off, hand to a live high-context session and confirm they
+  took it — don't drop it on an offline one.
+- **A handoff to an offline session is reclaimable, not lost.** Tasks routed to a
+  session that isn't running fall back to open and any live session (or a
+  `recruit`-ed one) pulls them. So work never stalls because the assignee went away.
 - **When there's genuinely nothing left for you** (backlog empty + claims clear), the
   loop sends you home — `classroom done` and exit. No hanging around.
 

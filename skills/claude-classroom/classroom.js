@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.6.1';
+const VERSION = '2.6.2';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -632,7 +632,10 @@ function vlen(s) { return String(s).replace(/\x1b\[[0-9;]*m/g, '').length; }
 
 function renderDashboard(meSid, tick = 0) {
   const r = repo();
-  const W = Math.max(56, Math.min(process.stdout.columns || 92, 100));
+  const envInt = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; };
+  const termCols = process.stdout.columns || envInt(process.env.COLUMNS);
+  const termRows = process.stdout.rows || envInt(process.env.LINES);
+  const W = Math.max(56, Math.min(termCols || 92, 100));
   const members = readMembers().filter(isLive).sort((a, b) => effectiveSeen(b) - effectiveSeen(a));
   const liveSids = new Set(members.map((m) => m.sid));
   let ghosts = [];
@@ -651,166 +654,194 @@ function renderDashboard(meSid, tick = 0) {
   for (const mm of msgs) if (now() - mm.ts < 5 * 60 * 1000 && mm.to && mm.to !== 'all') pinged.add(mm.to);
 
   // Shared board reads + height-aware density (fit one cockpit screen, no scroll).
-  const H = Math.max(20, process.stdout.rows || 40);
-  const dense = H < 30, roomy = H >= 46;
-  const cap = (small, mid, big) => (dense ? small : roomy ? big : mid);
+  const H = Math.max(14, termRows || 40);
+  const dense = H < 32;
   const allTasks = readTasks();
   const liveClaims = readClaims().filter((c) => liveSids.has(c.sid));
 
-  const L = [];
+  // ════════ build as sections, then FIT to the terminal height ════════
+  // Priority when space is tight: header + agent names ALWAYS show (never let the
+  // top scroll off); agent cards collapse to denser rows as the crew grows; the
+  // lower-value sections (chatter, claims, …) trim or drop — their counts still
+  // live in the BOARD strip so nothing is truly lost.
   const spin = fg(45) + SPIN[tick % SPIN.length] + RESET;
   const dots = members.map((m) => {
     const age = now() - effectiveSeen(m);
     const ch = (age < 180000 && tick % 2) ? '◉' : '●';
     return fg(disp(m.sid).color) + ch + RESET;
   }).join('');
-  L.push('');
-  L.push('  ' + spin + '  ' + BOLD + '🎓 CLAUDE CLASSROOM' + RESET + DIM + '  ·  ' + (r.topLevel ? path.basename(r.topLevel) : '—') + RESET
+  const divider = '  ' + fg(60) + '━'.repeat(W) + RESET;
+
+  // ── HEADER (always rendered, never trimmed) ──
+  const openEsc = (() => { try { return readEscalations().filter((e) => e.status === 'open'); } catch { return []; } })();
+  const proj = (() => { try { return readProject(); } catch { return null; } })();
+  const header = [];
+  header.push('');
+  header.push('  ' + spin + '  ' + BOLD + '🎓 CLAUDE CLASSROOM' + RESET + DIM + '  ·  ' + (r.topLevel ? path.basename(r.topLevel) : '—') + RESET
     + '   ' + BOLD + fg(220) + members.length + (members.length === 1 ? ' agent live' : ' agents live') + RESET
     + (ghosts.length ? DIM + '  +' + ghosts.length + ' detected' + RESET : '') + '   ' + dots);
-  L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
-  // overseer attention + project line (holistic top-of-cockpit)
-  const openEsc = (() => { try { return readEscalations().filter((e) => e.status === 'open'); } catch { return []; } })();
-  for (const e of openEsc) {
-    L.push('  ' + fg(196) + BOLD + '🚨 NEEDS YOU' + RESET + '  ' + C(e.by) + disp(e.by).name + RESET + ' asks: ' + fg(231) + trunc(e.q, W - 22) + RESET);
-  }
-  const proj = (() => { try { return readProject(); } catch { return null; } })();
+  header.push(divider);
+  for (const e of openEsc) header.push('  ' + fg(196) + BOLD + '🚨 NEEDS YOU' + RESET + '  ' + C(e.by) + disp(e.by).name + RESET + ' asks: ' + fg(231) + trunc(e.q, W - 22) + RESET);
   if (proj && proj.status === 'active') {
     const o = allTasks.filter((t) => t.status === 'open').length, dn = allTasks.filter((t) => t.status === 'done').length, dg = allTasks.filter((t) => t.status === 'taken').length;
     const tot = o + dn + dg;
-    L.push('  ' + fg(213) + '🎯 ' + BOLD + trunc(proj.goal, W - 50) + RESET
+    header.push('  ' + fg(213) + '🎯 ' + BOLD + trunc(proj.goal, W - 50) + RESET
       + '  ' + progressBar(dn, tot, 12) + DIM + ' ' + dn + '/' + tot + RESET
       + DIM + '   ' + o + ' open · ' + dg + ' doing · ' + dn + ' done' + RESET);
   }
-  if (openEsc.length || (proj && proj.status === 'active')) L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
-  if (!members.length) {
-    L.push(''); L.push('   ' + DIM + 'nobody in class right now — open a session to begin.' + RESET); L.push('');
+  if (openEsc.length || (proj && proj.status === 'active')) header.push(divider);
+
+  // ── FOOTER (always rendered) ──
+  const allT = allTasks;
+  const convs = readDecisions();
+  const openTasks = allT.filter((t) => t.status === 'open' && !taskBlocked(t, allT)).length;
+  const blocked = allT.filter((t) => t.status === 'open' && taskBlocked(t, allT)).length;
+  let reviewsQ = []; try { reviewsQ = readReviews().filter((x) => x.status === 'requested'); } catch {}
+  const operators = members.filter((m) => (m.owns || []).length).length;
+  const looseN = allT.filter((t) => t.status === 'open' && t.abandoned).length;
+  const board = [];
+  board.push(fg(203) + '🔒 ' + liveClaims.length + ' claims' + RESET);
+  board.push(fg(45) + '📋 ' + openTasks + ' tasks' + (blocked ? ' (+' + blocked + ' blocked)' : '') + RESET);
+  if (looseN) board.push(fg(208) + '🧵 ' + looseN + ' to finish' + RESET);
+  if (reviewsQ.length) board.push(fg(118) + '🔎 ' + reviewsQ.length + ' review' + (reviewsQ.length === 1 ? '' : 's') + RESET);
+  if (convs.length) board.push(fg(220) + '📐 ' + convs.length + ' rules' + RESET);
+  if (operators) board.push(fg(141) + '⬡ ' + operators + ' operators' + RESET);
+  board.push(fg(213) + '💬 ' + msgs.length + RESET);
+  const footer = [];
+  footer.push(divider);
+  footer.push('  ' + DIM + 'BOARD  ' + RESET + board.join(DIM + ' · ' + RESET));
+  if (dense) {
+    footer.push('  ' + DIM + 'KEY  ' + fg(82) + '●' + DIM + ' live ' + fg(220) + '●' + DIM + ' idle ○ away  ' + RESET + gauge(70, 4) + DIM + ' ctx  ' + fg(45) + '○' + DIM + ' open ' + fg(220) + '◐' + DIM + ' doing ' + fg(208) + '↻' + DIM + ' resume  🔒 file' + RESET);
+  } else {
+    footer.push('  ' + DIM + 'KEY  ' + fg(82) + '●' + DIM + ' live ' + fg(220) + '●' + DIM + ' idle ' + RESET + DIM + '○ away  ┃ agent  ⬡ owns area  🎯 project  🚨 needs-you  ' + gauge(70, 4) + ' ctx left' + RESET);
+    footer.push('  ' + DIM + '     task: ' + fg(45) + '○' + DIM + ' open ' + fg(220) + '◐' + DIM + ' doing ' + fg(208) + '↻' + DIM + ' resume ⛔ blocked   🔒 claim  💬 msg  📝 note  🔎 review' + RESET);
   }
-  for (const m of members) {
-    const p = disp(m.sid);
-    const col = fg(p.color);
-    const bar = col + '┃' + RESET;
-    const seen = effectiveSeen(m);
-    const age = now() - seen;
+  footer.push('  ' + DIM + 'classroom: status · ask · review · escalate · loose-ends · park     ⌃C exit' + RESET);
+
+  // ── agent card builder, at 4 detail tiers (3=full … 0=one line) ──
+  const buildCard = (m, d) => {
+    const p = disp(m.sid), col = fg(p.color), barC = col + '┃' + RESET;
+    const seen = effectiveSeen(m), age = now() - seen;
     const dot = age < 180000 ? (tick % 2 ? fg(46) : fg(82)) + '●' + RESET : age < 900000 ? fg(220) + '●' + RESET : DIM + '○' + RESET;
-    const you = m.sid === meSid ? DIM + '  (you)' + RESET : '';
-    const badge = pinged.has(m.sid) ? '  ' + fg(213) + '💬' + RESET : '';
+    const you = m.sid === meSid ? DIM + ' (you)' + RESET : '';
+    const badge = pinged.has(m.sid) ? ' ' + fg(213) + '💬' + RESET : '';
     const held = liveClaims.filter((c) => c.sid === m.sid).length;
-    L.push('  ' + bar);
-    L.push('  ' + bar + '  ' + p.emoji + '  ' + col + BOLD + p.name + RESET + ' ' + DIM + p.trait + RESET
-      + '  ' + DIM + '· ' + shortId(m.sid) + RESET
-      + '   ' + dot + ' ' + DIM + rel(seen) + RESET + you + badge);
     const hr = m.headroom ?? 100;
-    const meta = [];
-    if (m.branch) meta.push(m.branch);
-    if (m.expertise && m.expertise.length) meta.push(m.expertise.slice(0, 3).join(', '));
-    L.push('  ' + bar + '     ' + DIM + trunc(meta.join('  ·  '), W - 30) + RESET
-      + '   ' + DIM + 'ctx' + RESET + ' ' + gauge(hr, 8) + ' ' + DIM + hr + '%' + RESET
-      + (held ? '  ' + fg(203) + '🔒' + held + RESET : ''));
-    if (m.owns && m.owns.length) L.push('  ' + bar + '     ' + DIM + '⬡ operates: ' + trunc(m.owns.join(', '), W - 18) + RESET);
     const task = (m.task && m.task !== '(auto-enrolled)') ? m.task : 'getting oriented…';
-    L.push('  ' + bar + '     ' + col + '“' + trunc(task, W - 12) + '”' + RESET);
-    if (!dense) { const latest = agentLatest(m.sid); if (latest) L.push('  ' + bar + '     ' + DIM + '▸ ' + trunc(latest, W - 12) + RESET); }
-  }
-  if (ghosts.length) {
-    L.push('');
-    L.push('  ' + DIM + "· · ·  also active here, not enrolled (won't see claims)  · · ·" + RESET);
-    for (const g of ghosts.slice(0, cap(2, 4, 8))) {
-      const gp = disp(g.sid);
-      L.push('  ' + DIM + '┃  ' + gp.emoji + '  ' + gp.name + '  · ' + shortId(g.sid)
-        + '   ○ ' + rel(g.mtimeMs) + '   — run /claude-classroom to join' + RESET);
+    const ls = [];
+    if (d === 0) {
+      ls.push('  ' + dot + ' ' + p.emoji + ' ' + col + BOLD + p.name + RESET + ' ' + gauge(hr, 5) + DIM + hr + '%' + RESET
+        + (held ? ' ' + fg(203) + '🔒' + held + RESET : '') + DIM + '  “' + trunc(task, W - 48) + '”' + RESET + you + badge);
+      return ls;
     }
-  }
-  // ── 🔒 the collision map — who holds which files RIGHT NOW ──
-  if (liveClaims.length) {
-    L.push('');
-    L.push('  ' + fg(203) + '🔒 CLAIMS' + RESET + DIM + "   files locked now — don't edit another agent's" + RESET);
-    const shownC = liveClaims.slice(0, cap(3, 6, 10));
-    for (const c of shownC) {
-      const mine = c.sid === meSid ? ' ' + fg(46) + '(yours)' + RESET : '';
-      L.push('   ' + fg(203) + '·' + RESET + ' ' + trunc(c.path, W - 36) + '  ' + fg(244) + '→' + RESET + ' ' + C(c.sid) + disp(c.sid).name + RESET + mine
-        + (c.intent ? DIM + '  ' + trunc(c.intent, 26) + RESET : ''));
+    ls.push('  ' + barC);
+    ls.push('  ' + barC + '  ' + p.emoji + '  ' + col + BOLD + p.name + RESET + ' ' + DIM + p.trait + RESET
+      + '  ' + DIM + '· ' + shortId(m.sid) + RESET + '   ' + dot + ' ' + DIM + rel(seen) + RESET + you + badge);
+    if (d >= 2) {
+      const meta = [];
+      if (m.branch) meta.push(m.branch);
+      if (m.expertise && m.expertise.length) meta.push(m.expertise.slice(0, 3).join(', '));
+      ls.push('  ' + barC + '     ' + DIM + trunc(meta.join('  ·  '), W - 30) + RESET
+        + '   ' + DIM + 'ctx' + RESET + ' ' + gauge(hr, 8) + ' ' + DIM + hr + '%' + RESET + (held ? '  ' + fg(203) + '🔒' + held + RESET : ''));
+      if (d >= 3 && m.owns && m.owns.length) ls.push('  ' + barC + '     ' + DIM + '⬡ operates: ' + trunc(m.owns.join(', '), W - 18) + RESET);
+      ls.push('  ' + barC + '     ' + col + '“' + trunc(task, W - 12) + '”' + RESET);
+      if (d >= 3) { const latest = agentLatest(m.sid); if (latest) ls.push('  ' + barC + '     ' + DIM + '▸ ' + trunc(latest, W - 12) + RESET); }
+    } else {
+      ls.push('  ' + barC + '     ' + DIM + 'ctx' + RESET + ' ' + gauge(hr, 6) + ' ' + DIM + hr + '%' + RESET
+        + (held ? ' ' + fg(203) + '🔒' + held + RESET : '') + '  ' + col + '“' + trunc(task, W - 30) + '”' + RESET);
     }
-    if (liveClaims.length > shownC.length) L.push('   ' + DIM + '+' + (liveClaims.length - shownC.length) + ' more locked…' + RESET);
-  }
-  // ── 📋 backlog — what the crew is doing / what's up for grabs ──
-  const activeTasks = allTasks.filter((t) => t.status === 'open' || t.status === 'taken');
-  if (activeTasks.length) {
-    L.push('');
-    L.push('  ' + fg(45) + '📋 BACKLOG' + RESET + DIM + '   the team queue — `take <id>` to grab one' + RESET);
-    const rank = { taken: 0, open: 1 };
-    const sorted = activeTasks.slice().sort((a, b) => (rank[a.status] - rank[b.status]) || (a.createdAt - b.createdAt));
-    const shownT = sorted.slice(0, cap(3, 5, 8));
-    for (const t of shownT) {
-      const isBlocked = t.status === 'open' && taskBlocked(t, allTasks);
-      let who;
-      if (t.status === 'taken' && t.takenBy) who = fg(244) + '→ ' + RESET + C(t.takenBy) + disp(t.takenBy).name + RESET + (t.fit ? DIM + ' @' + t.fit : '') + RESET;
-      else if (t.abandoned) who = fg(208) + 'resume' + RESET + DIM + ' (was ' + shortId(t.abandonedBy) + ')' + RESET;
-      else if (t.to) who = fg(244) + '→ ' + RESET + DIM + 'routed ' + shortId(t.to) + RESET;
-      else who = fg(82) + 'open' + RESET;
-      const mark = t.status === 'taken' ? fg(220) + '◐' + RESET : isBlocked ? DIM + '⛔' + RESET : t.abandoned ? fg(208) + '↻' + RESET : fg(45) + '○' + RESET;
-      L.push('   ' + mark + ' ' + DIM + '[' + t.id + ']' + RESET + ' ' + trunc(t.title, W - 42) + '  ' + effortChip(t.effort) + '  ' + who);
-    }
-    if (sorted.length > shownT.length) L.push('   ' + DIM + '+' + (sorted.length - shownT.length) + ' more queued…' + RESET);
-  }
-  // ── 🔎 review queue — awaiting a verdict before landing ──
-  let reviewsQ = [];
-  try { reviewsQ = readReviews().filter((x) => x.status === 'requested'); } catch {}
-  if (reviewsQ.length) {
-    L.push('');
-    L.push('  ' + fg(118) + '🔎 REVIEW QUEUE' + RESET + DIM + '   verify (tests/evals/e2e) then `verdict`' + RESET);
-    for (const x of reviewsQ.slice(0, cap(2, 3, 5))) {
-      const to = x.to ? C(x.to) + disp(x.to).name + RESET : fg(220) + 'anyone' + RESET;
-      L.push('   ' + fg(118) + '·' + RESET + ' ' + DIM + '[' + x.id + ']' + RESET + ' ' + trunc(x.what, W - 40)
-        + '  ' + C(x.by) + disp(x.by).name + RESET + ' ' + fg(244) + '─▶' + RESET + ' ' + to);
-    }
-  }
-  // ── 💬 live chatter: notes + messages flying around ──
-  let notes = [];
-  try { notes = allEvents().filter((e) => e.kind === 'note'); } catch {}
+    return ls;
+  };
+  const buildAgents = (d, maxCount) => {
+    const out = [];
+    const list = maxCount ? members.slice(0, maxCount) : members;
+    for (const m of list) out.push(...buildCard(m, d));
+    if (maxCount && members.length > maxCount) out.push('  ' + DIM + '   +' + (members.length - maxCount) + ' more agent(s) — taller window to see all' + RESET);
+    return out;
+  };
+
+  // ── precompute optional section rows (fitSection trims them to the budget) ──
+  const rank = { taken: 0, open: 1 };
+  const activeTasks = allTasks.filter((t) => t.status === 'open' || t.status === 'taken')
+    .sort((a, b) => (rank[a.status] - rank[b.status]) || (a.createdAt - b.createdAt));
+  const backlogRows = activeTasks.slice(0, 14).map((t) => {
+    const isBlocked = t.status === 'open' && taskBlocked(t, allTasks);
+    let who;
+    if (t.status === 'taken' && t.takenBy) who = fg(244) + '→ ' + RESET + C(t.takenBy) + disp(t.takenBy).name + RESET + (t.fit ? DIM + ' @' + t.fit : '') + RESET;
+    else if (t.abandoned) who = fg(208) + 'resume' + RESET + DIM + ' (was ' + shortId(t.abandonedBy) + ')' + RESET;
+    else if (t.to) who = fg(244) + '→ ' + RESET + DIM + 'routed ' + shortId(t.to) + RESET;
+    else who = fg(82) + 'open' + RESET;
+    const mark = t.status === 'taken' ? fg(220) + '◐' + RESET : isBlocked ? DIM + '⛔' + RESET : t.abandoned ? fg(208) + '↻' + RESET : fg(45) + '○' + RESET;
+    return '   ' + mark + ' ' + DIM + '[' + t.id + ']' + RESET + ' ' + trunc(t.title, W - 42) + '  ' + effortChip(t.effort) + '  ' + who;
+  });
+  const reviewRows = reviewsQ.slice(0, 8).map((x) => {
+    const to = x.to ? C(x.to) + disp(x.to).name + RESET : fg(220) + 'anyone' + RESET;
+    return '   ' + fg(118) + '·' + RESET + ' ' + DIM + '[' + x.id + ']' + RESET + ' ' + trunc(x.what, W - 40)
+      + '  ' + C(x.by) + disp(x.by).name + RESET + ' ' + fg(244) + '─▶' + RESET + ' ' + to;
+  });
+  const claimRows = liveClaims.slice(0, 14).map((c) => {
+    const mine = c.sid === meSid ? ' ' + fg(46) + '(yours)' + RESET : '';
+    return '   ' + fg(203) + '·' + RESET + ' ' + trunc(c.path, W - 36) + '  ' + fg(244) + '→' + RESET + ' ' + C(c.sid) + disp(c.sid).name + RESET + mine
+      + (c.intent ? DIM + '  ' + trunc(c.intent, 26) + RESET : '');
+  });
+  const ghostRows = ghosts.slice(0, 8).map((g) => {
+    const gp = disp(g.sid);
+    return '  ' + DIM + '┃  ' + gp.emoji + '  ' + gp.name + '  · ' + shortId(g.sid) + '   ○ ' + rel(g.mtimeMs) + '   — /claude-classroom to join' + RESET;
+  });
+  let notes = []; try { notes = allEvents().filter((e) => e.kind === 'note'); } catch {}
   const feed = [
     ...msgs.map((mm) => ({ ts: mm.ts, from: mm.from, to: mm.to, text: mm.text, kind: 'msg' })),
     ...notes.map((e) => ({ ts: e.ts, from: e.sid, to: null, text: e.msg, kind: 'note' })),
-  ].sort((a, b) => a.ts - b.ts).slice(-cap(3, 5, 8));
-  L.push('');
-  L.push('  ' + fg(213) + '💬 CHATTER' + RESET + DIM + '   notes & messages flying around' + RESET);
-  if (!feed.length) L.push('   ' + DIM + '(quiet so far — no notes or messages)' + RESET);
-  for (const f of feed) {
+  ].sort((a, b) => a.ts - b.ts);
+  const chatterRows = feed.slice(-12).map((f) => {
     const from = disp(f.from);
     const fhead = C(f.from) + from.emoji + ' ' + BOLD + from.name + RESET;
     if (f.kind === 'msg') {
       const to = f.to === 'all' ? fg(220) + 'everyone' + RESET : C(f.to) + disp(f.to).name + RESET;
-      L.push('   ' + fhead + ' ' + fg(244) + '─▶' + RESET + ' ' + to + DIM + '  ' + trunc(f.text, W - 28) + RESET + DIM + '  ' + rel(f.ts) + RESET);
-    } else {
-      L.push('   ' + fhead + ' ' + DIM + '📝 ' + trunc(f.text, W - 22) + '  ' + rel(f.ts) + RESET);
+      return '   ' + fhead + ' ' + fg(244) + '─▶' + RESET + ' ' + to + DIM + '  ' + trunc(f.text, W - 28) + RESET + DIM + '  ' + rel(f.ts) + RESET;
     }
+    return '   ' + fhead + ' ' + DIM + '📝 ' + trunc(f.text, W - 22) + '  ' + rel(f.ts) + RESET;
+  });
+
+  // ── assemble within the height budget ──
+  const out = [...header];
+  let avail = H - header.length - footer.length;
+  if (!members.length) {
+    out.push('', '   ' + DIM + 'nobody in class right now — open a session to begin.' + RESET);
+  } else {
+    const hasOptional = backlogRows.length || reviewRows.length || claimRows.length || ghostRows.length || chatterRows.length;
+    const MIN_OPT = hasOptional ? 4 : 0; // keep room for at least one optional section
+    let agentLines = null;
+    for (const d of [3, 2, 1]) { const a = buildAgents(d); if (a.length <= avail - MIN_OPT) { agentLines = a; break; } }
+    if (!agentLines) for (const d of [1, 0]) { const a = buildAgents(d); if (a.length <= avail) { agentLines = a; break; } }
+    if (!agentLines) agentLines = buildAgents(0, Math.max(1, avail - 1));
+    out.push(...agentLines);
+    avail -= agentLines.length;
+
+    // optional sections fill the rest, by priority; each trims/drops to fit.
+    const budget = { n: avail };
+    const fitSection = (title, rows, moreNoun, keepTail) => {
+      const cap = budget.n - 2; // spacer + title cost 2 rows
+      if (cap < 1 || !rows.length) return;
+      let show, hidden;
+      if (rows.length <= cap) { show = rows.length; hidden = 0; }
+      else { show = Math.max(0, cap - 1); hidden = rows.length - show; } // reserve 1 row for "+N more"
+      const sec = ['', title];
+      if (hidden > 0 && keepTail) sec.push('   ' + DIM + '+' + hidden + ' earlier ' + moreNoun + RESET);
+      const slice = keepTail ? rows.slice(rows.length - show) : rows.slice(0, show);
+      for (const rr of slice) sec.push(rr);
+      if (hidden > 0 && !keepTail) sec.push('   ' + DIM + '+' + hidden + ' more ' + moreNoun + RESET);
+      budget.n -= sec.length;
+      out.push(...sec);
+    };
+    fitSection('  ' + fg(45) + '📋 BACKLOG' + RESET + DIM + '   the team queue — `take <id>` to grab one' + RESET, backlogRows, 'queued…');
+    fitSection('  ' + fg(118) + '🔎 REVIEW QUEUE' + RESET + DIM + '   verify (tests/evals/e2e) then `verdict`' + RESET, reviewRows, 'in review…');
+    fitSection('  ' + fg(203) + '🔒 CLAIMS' + RESET + DIM + "   files locked now — don't edit another agent's" + RESET, claimRows, 'locked…');
+    fitSection('  ' + DIM + "· · ·  also active here, not enrolled (won't see claims)  · · ·" + RESET, ghostRows, 'detected…');
+    fitSection('  ' + fg(213) + '💬 CHATTER' + RESET + DIM + '   notes & messages flying around' + RESET, chatterRows, 'notes…', true);
   }
-  L.push('');
-  L.push('  ' + fg(60) + '━'.repeat(W) + RESET);
-  // BOARD strip — the whole state at a glance
-  const allT = allTasks;
-  const convs = readDecisions();
-  const claims = liveClaims.length;
-  const openTasks = allT.filter((t) => t.status === 'open' && !taskBlocked(t, allT)).length;
-  const blocked = allT.filter((t) => t.status === 'open' && taskBlocked(t, allT)).length;
-  const pendRev = reviewsQ.length;
-  const operators = members.filter((m) => (m.owns || []).length).length;
-  const board = [];
-  board.push(fg(203) + '🔒 ' + claims + ' claims' + RESET);
-  board.push(fg(45) + '📋 ' + openTasks + ' tasks' + (blocked ? ' (+' + blocked + ' blocked)' : '') + RESET);
-  const looseN = allT.filter((t) => t.status === 'open' && t.abandoned).length;
-  if (looseN) board.push(fg(208) + '🧵 ' + looseN + ' to finish' + RESET);
-  if (pendRev) board.push(fg(118) + '🔎 ' + pendRev + ' review' + (pendRev === 1 ? '' : 's') + RESET);
-  if (convs.length) board.push(fg(220) + '📐 ' + convs.length + ' rules' + RESET);
-  if (operators) board.push(fg(141) + '⬡ ' + operators + ' operators' + RESET);
-  board.push(fg(213) + '💬 ' + msgs.length + RESET);
-  L.push('  ' + DIM + 'BOARD  ' + RESET + board.join(DIM + ' · ' + RESET));
-  // LEGEND — what every glyph means, always shown
-  L.push('  ' + DIM + 'KEY  ' + fg(82) + '●' + DIM + ' live ' + fg(220) + '●' + DIM + ' idle ' + RESET + DIM + '○ away  ┃ agent  ⬡ owns area  🎯 project  🚨 needs-you  ' + gauge(70, 4) + ' ctx left' + RESET);
-  L.push('  ' + DIM + '     task: ' + fg(45) + '○' + DIM + ' open ' + fg(220) + '◐' + DIM + ' doing ⛔ blocked   🔒 claim/file  💬 msg  📝 note  ─▶ to  🔎 review  📐 rule' + RESET);
-  L.push('  ' + DIM + 'classroom: status · whoknows <area> · ask · review · escalate · checkpoint     ⌃C to exit' + RESET);
-  L.push('');
-  return L.join('\n');
+  out.push(...footer);
+  return out.join('\n');
 }
 
 function renderBoard(meSid) {
@@ -1066,6 +1097,37 @@ function resolveSid(token) {
     if (nm === t.replace(/^@/, '')) return m.sid;
   }
   return null;
+}
+// Like resolveSid but matches OFFLINE members too — used to tell "no such session"
+// apart from "that session is enrolled but not currently running", so work/messages
+// are never silently aimed at a session that isn't there.
+function resolveSidAny(token) {
+  if (!token) return null;
+  const t = String(token).toLowerCase().replace(/^@/, '');
+  const members = readMembers();
+  const pmap = assignPersonas(members.map((m) => m.sid));
+  for (const m of members) {
+    if (m.sid === token || m.sid.startsWith(token) || shortId(m.sid) === token) return m.sid;
+    const nm = ((m.name && m.name.trim()) ? m.name.trim() : pmap.get(m.sid).n).toLowerCase();
+    if (nm === t) return m.sid;
+  }
+  return null;
+}
+// Shared "this target isn't live" explainer for msg/ask — names who IS live and how
+// to actually get the work picked up.
+function offlineTargetHelp(toTok) {
+  const off = resolveSidAny(toTok);
+  const live = readMembers().filter(isLive);
+  const lines = [];
+  if (off) {
+    const om = getMember(off);
+    lines.push(`✗ ${shortId(off)} is enrolled but OFFLINE${om && om.lastSeen ? ' (last seen ' + rel(om.lastSeen) + ')' : ''} — it is NOT running and won't see this.`);
+  } else {
+    lines.push(`✗ no session matches "${toTok}" — nothing by that name is running.`);
+  }
+  lines.push('   Live right now: ' + (live.length ? live.map((m) => shortId(m.sid) + (m.name ? ` (${m.name})` : '')).join(', ') : 'NOBODY is live'));
+  lines.push('   → send it to a LIVE session, or get a worker on it: `classroom recruit 1` (spawns one), or `delegate "<task>"` open-to-anyone so the next session takes it.');
+  return lines.join('\n');
 }
 
 // fit score of a member for a task (shared by suggest + work-stealing).
@@ -1366,7 +1428,14 @@ COMMANDS.delegate = (args) => {
   const title = args._.join(' ').trim() || args.title || '';
   if (!title) { console.error('✗ usage: delegate "<task>" [--reason "why"] [--area x] [--effort low|med|high] [--to <sid>] [--mission <id>] [--after-commit]'); process.exit(2); }
   const blockedBy = args['blocked-by'] ? parseList(args['blocked-by']) : [];
-  const to = args.to ? (resolveSid(args.to) || args.to) : null;
+  // Routing a task to a session that ISN'T live would black-hole it (nobody live
+  // can pull a task addressed to a dead session). Fall back to open-to-anyone so
+  // the work actually gets picked up — never hand off to a non-running session.
+  let to = null;
+  if (args.to) {
+    to = resolveSid(args.to);
+    if (!to) console.error(`⚠ "${args.to}" isn't a LIVE session — leaving [${'this'}] task OPEN to anyone so it actually gets done (don't route work to a session that isn't running).`);
+  }
   const t = {
     id: newTaskId(), title, area: args.area || null, reason: args.reason || '',
     effort: args.effort || 'low', to, createdBy: sid,
@@ -1962,6 +2031,10 @@ COMMANDS['hook-stop'] = (args) => {
   const proj = readProject();
   if (!proj || proj.status !== 'active') return;   // no active project → normal stop (autonomy is opt-in via a project)
   touch(sid); reap();
+  // Fresh (user-initiated) stop → re-engage: clear any prior back-off so a session
+  // with real work to do is nudged again every turn and can't quietly drift off
+  // mid-project. The within-sequence cap below still prevents the runaway loop.
+  if (!stopActive && (m.releasedSig || m.stopRepeat)) { m.releasedSig = null; m.stopRepeat = 0; writeMember(m); }
   const block = (reason) => process.stdout.write(JSON.stringify({ decision: 'block', reason }));
   // Anti-loop: NEVER re-block the same demand forever. stop_hook_active means we
   // already blocked and the session stopped AGAIN anyway — it has seen the nudge
@@ -1971,17 +2044,30 @@ COMMANDS['hook-stop'] = (args) => {
   // hits a different demand each turn, so its counter resets — it's never cut off.
   const MAX_BLOCKS = parseInt(process.env.CLASSROOM_MAX_STOP_BLOCKS || '2', 10);
   const all = readTasks();
+  const liveSet = new Set(readMembers().filter(isLive).map((x) => x.sid));
   const myTaken = all.find((t) => t.status === 'taken' && t.takenBy === sid);
-  const abandoned = all.find((t) => t.status === 'open' && t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid));
+  const abandoned = all.find((t) => t.status === 'open' && t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
   const assigned = all.find((t) => t.status === 'open' && t.to === sid && !taskBlocked(t, all));
   let myReviews = []; try { myReviews = readReviews().filter((rv) => rv.status === 'requested' && rv.to === sid); } catch {}
-  const ready = all.filter((t) => t.status === 'open' && !t.to && !t.abandoned && !taskBlocked(t, all));
+  // ready = open work this session can pick up: unrouted, mine, OR routed to a
+  // session that isn't live (a handoff to a non-running session — reclaim it so it
+  // doesn't black-hole). This is the core "make not-working impossible" lever.
+  const ready = all.filter((t) => t.status === 'open' && !t.abandoned && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
   let action = null, sig = null;
   if (myTaken) { action = `finish your in-progress task "${myTaken.title}" [${myTaken.id}] — commit it, then \`classroom finish ${myTaken.id}\``; sig = 'task:' + myTaken.id; }
   else if (abandoned) { action = `RESUME abandoned work "${abandoned.title}" [${abandoned.id}] — ${shortId(abandoned.abandonedBy)} started it then left it unfinished. Finish-the-job before anything new: \`classroom take ${abandoned.id}\` and complete it`; sig = 'abandon:' + abandoned.id; }
   else if (assigned) { action = `take your assignment "${assigned.title}" [${assigned.id}] (\`classroom take ${assigned.id}\`) and do it`; sig = 'assign:' + assigned.id; }
   else if (myReviews.length) { action = `do the review waiting on you [${myReviews[0].id}] — run tests/evals/e2e, then \`classroom verdict\``; sig = 'review:' + myReviews[0].id; }
-  else if (ready.length) { const b = ready.map((t) => ({ t, f: fitScore(m, t) })).sort((x, y) => y.f - x.f)[0]; action = `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`; sig = 'pull'; }
+  else if (ready.length) {
+    const b = ready.map((t) => ({ t, f: fitScore(m, t) })).sort((x, y) => y.f - x.f)[0];
+    const orphanRoute = b.t.to && !liveSet.has(b.t.to);
+    action = (b.t.createdBy === sid)
+      ? `you posted "${b.t.title}" [${b.t.id}] and NOBODY live is working it — don't post-and-vanish: take it yourself now (\`classroom take ${b.t.id}\`) or it won't get done`
+      : orphanRoute
+        ? `"${b.t.title}" [${b.t.id}] was handed to a session that isn't running — reclaim it: \`classroom take ${b.t.id}\` and do it`
+        : `pull the next task "${b.t.title}" [${b.t.id}] (\`classroom pull\`) and do it`;
+    sig = 'pull:' + b.t.id;
+  }
   // NOTE: un-landed orphan branches are deliberately NOT a stop-block. Landing
   // someone else's branch is a judgment call that can be DESTRUCTIVE (it can
   // revert production). They're surfaced by `loose-ends`, the dashboard, and the
@@ -2196,7 +2282,7 @@ COMMANDS.msg = (args) => {
   const text = (args.to ? args._.join(' ') : args._.slice(1).join(' ')).trim() || args.text || '';
   if (!toTok || !text) { console.error('✗ usage: msg <@agent|sid|all> "message"'); process.exit(2); }
   const to = resolveSid(toTok);
-  if (!to) { console.error(`✗ no live agent matches "${toTok}". Run \`status\` to see names.`); process.exit(1); }
+  if (!to) { console.error(offlineTargetHelp(toTok)); process.exit(1); }
   const m = { id: newId('m'), from: sid, to, text, ts: now() };
   writeMessage(m);
   logEvent(sid, 'msg', `→ ${to === 'all' ? 'everyone' : shortId(to)}: ${text}`, { to });
@@ -2210,7 +2296,10 @@ COMMANDS.pull = (args) => {
   const me = autoEnroll(sid);
   touch(sid);
   const all = readTasks();
-  const open = all.filter((t) => t.status === 'open' && !taskBlocked(t, all) && (!t.to || t.to === sid));
+  const liveSet = new Set(readMembers().filter(isLive).map((x) => x.sid));
+  // takeable = open, unblocked, and either for me / open / routed to a session that
+  // ISN'T live (reclaim a handoff that was aimed at a session which never ran).
+  const open = all.filter((t) => t.status === 'open' && !taskBlocked(t, all) && (!t.to || t.to === sid || !liveSet.has(t.to)));
   if (!open.length) { console.log('No ready tasks to pull. The backlog is clear.'); return; }
   // Finish-the-job: a started-then-abandoned task outranks any fresh one, so the
   // crew goes back and completes dropped work before opening new fronts.
@@ -2595,10 +2684,15 @@ COMMANDS.ask = (args) => {
   const ranked = members.map((m) => ({ m, own: ownerMatch(m, target), fit: fitScore(m, { title: target, area: target }) }))
     .sort((a, b) => b.own - a.own || b.fit - a.fit);
   const best = ranked[0];
+  if (!members.length) {
+    console.error(`✗ NOBODY else is live to answer about "${target}" — your question would vanish.`);
+    console.error('   Don\'t block on a phantom teammate: answer it yourself, `classroom recruit 1` to get a worker, or just proceed and note it via `sync`.');
+    process.exit(1);
+  }
   if (!best || (best.own === 0 && best.fit <= 15)) {
     writeMessage({ id: newId('m'), from: sid, to: 'all', text: `❓ [${target}] ${q}`, ts: now() });
     logEvent(sid, 'ask', `(no owner) ${target}: ${q}`);
-    console.log(`No clear operator for "${target}" — asked the whole team. Replies via: msg ${shortId(sid)} "…".`);
+    console.log(`No clear operator for "${target}" — asked the ${members.length} live teammate(s). Replies via: msg ${shortId(sid)} "…".`);
     return;
   }
   writeMessage({ id: newId('m'), from: sid, to: best.m.sid, text: `❓ about ${target}: ${q}`, ts: now() });

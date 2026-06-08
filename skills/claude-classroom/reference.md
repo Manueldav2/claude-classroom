@@ -112,6 +112,28 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.6.2 — height-fit TUI + delivery guarantee (work/messages can't vanish)
+Two user reports: (1) the `watch` TUI overflowed the terminal so the top (header +
+agent names) scrolled off; (2) sessions don't actually work — they hand off to a
+session that isn't running, or post-and-vanish ("low on context, I'll post it") and
+nobody ever picks it up.
+- **Height-fit dashboard**: renderDashboard now builds prioritized SECTIONS and fits
+  them to terminal rows (`process.stdout.rows`, env LINES/COLUMNS fallback). Header +
+  agent names ALWAYS render; agent cards collapse across 4 detail tiers (full→one-line)
+  as the crew grows; lower sections (chatter, claims, ghosts, …) trim to "+N more" or
+  drop, with counts preserved in the BOARD strip. `fitSection` guarantees each section
+  never exceeds its budget (fixed an off-by-one). Verified fits at rows 20–60, no overflow.
+- **Delivery guarantee** (work never aimed at a non-running session):
+  - `msg`/`ask` to a non-live target → refused with who-IS-live + recruit hint
+    (`offlineTargetHelp`, `resolveSidAny` distinguishes "no such session" vs "offline").
+  - `delegate --to <non-live>` → falls back to OPEN-to-anyone (was a black hole: a task
+    routed to a dead sid could never be pulled).
+  - `pull` + Stop hook treat tasks routed to a non-live session as reclaimable.
+  - Stop hook: clears the back-off on every fresh (non-`stop_hook_active`) stop so a
+    session with real work is re-nudged each turn (can't drift off); catches
+    post-and-vanish ("you posted X, nobody live is on it — take it back"); reclaims
+    handoffs to offline sessions. Within-sequence anti-loop (v2.6.1) still prevents runaway.
+
 ## v2.6.1 — Stop-hook anti-loop + park (fixes a v2.6.0 regression)
 A real user incident: the v2.6.0 Stop hook hard-blocked on an un-landed orphan branch
 and fired 9× identically (it ignored `stop_hook_active`), demanding a merge the session
