@@ -112,6 +112,26 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.7.1 — build-don't-narrate: kill research/planning theater + "self-running loop" stops
+v2.7.0 wasn't enough: on a big task, sessions did elaborate research/repo-mining/scorecards/
+knowledge-recording/coordination, declared "the loop is live, I'll come back with numbers,"
+and STOPPED before building/testing anything — and still asked the founder to "label turns"
+and "send the repo." Two hard rules added to the brief (lines 2-3, after PRIME DIRECTIVE) +
+SKILL top callout:
+- **PROGRESS = a shipped, TESTED change.** Research/plans/scorecards/knowledge/decrees/board
+  coordination/spawning helpers are SETUP, not progress; stopping after them is failure. The
+  moment you have a candidate change, build+test it against the baseline THIS turn, keep it
+  only if it measurably wins, do the next. "There is no self-running loop — YOU are the loop";
+  never say "it's self-sustaining / I'll come back with numbers" and stop; don't "wait for
+  background agents" — build alongside them.
+- **Make EVERYTHING objective, then test.** Any which-is-better/what-scope/does-this-match-your-
+  taste → define a proxy metric (prod outputs / rubric as ground truth), measure, keep the
+  winner. Don't ask the founder to label/rank/choose/send what you can derive/scrape/proxy.
+  Only real stops: genuinely irreversible actions + an unobtainable credential.
+- Stop hook now appends "NOTHING has shipped yet — research/plans aren't progress" when zero
+  tasks are done, and pushes "build it and TEST it against the baseline this turn, then run the
+  NEXT iteration yourself." Dogfooded: brief + Stop message verified.
+
 ## v2.7.0 — maximal agency: stop the passing-back-and-forth / laziness regression
 User: the accumulated guardrails (stand-down, back-off, hand-off, escalate-gating) had
 tilted sessions toward passivity — passing work around, recruiting instead of doing,

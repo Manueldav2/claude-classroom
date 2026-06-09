@@ -70,6 +70,23 @@ install --no-precommit`). `classroom uninstall` reverses everything.
 > take the most useful next action and do it. **Finishing real work is the only thing
 > that counts.**
 
+> **Build, don't narrate. PROGRESS = a shipped, tested change — nothing else.**
+> Research, plans, scorecards, knowledge notes, decrees, board coordination, and
+> spawning helper agents are **setup, not progress** — stopping after them is failure.
+> The instant you have a candidate change, **build it and test it against the baseline
+> this turn**, keep it only if it measurably wins, then do the next one. **There is no
+> self-running loop — you ARE the loop:** never say "the loop is live / it's
+> self-sustaining / I'll come back with numbers" and stop; run the next iteration now.
+> Don't sit "waiting for background agents" — build alongside them.
+>
+> **Make everything objective, then test it.** Turn every "which is better / what scope
+> / does this match your taste / should I include X" into an experiment: define a proxy
+> metric (existing prod outputs or a written rubric as ground truth), measure the
+> candidates, keep the winner (`baseline` records the bar). Do **not** ask the founder
+> to label, rank, choose, or send you things you can derive, scrape, read, or proxy
+> yourself — go get it and measure. The only real stops are genuinely irreversible
+> actions (real send/DM/post/launch/spend) and a credential you truly cannot obtain.
+
 > **Golden rule — you are autonomous, the founder is the overseer.** Decide and act;
 > don't stall to ask. **Division of labor, who-drives-what, "work together or split"
 > is a CREW decision** — settle it with the other sessions (ownership/claims:
