@@ -112,6 +112,20 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.7.2 — fix the edit-guard false "operation stopped by hook" (solo sessions)
+User: "Operation stopped by hook when it shouldn't be." Root cause: when
+CLAUDE_CODE_SESSION_ID isn't exported, Bash `claim`/`enroll` resolve identity via the
+grandparent-pid fallback (`local-<hash>`) while the PreToolUse edit-guard used the real
+`session_id` from stdin — so the guard saw the session's OWN claim as "another live
+session" and DENIED its own edit. Fixes:
+- The guard now resolves ownership via `sessionId(args)` (same as Bash) and treats both
+  that id AND the stdin real id as "me" — own claims are never a conflict.
+- A deny now requires a GENUINELY DISTINCT concurrent session, verified via
+  `detectPeers` (keys off real transcript files, immune to id drift). A SOLO session has
+  no peer → can NEVER be blocked by its own or a stale claim. Default stays `deny` but it
+  only fires with a real peer; `warn`/`off` still available.
+Verified: solo+drifted-id → ALLOWED; genuine 2-transcript conflict → DENY; own file → ALLOWED.
+
 ## v2.7.1 — build-don't-narrate: kill research/planning theater + "self-running loop" stops
 v2.7.0 wasn't enough: on a big task, sessions did elaborate research/repo-mining/scorecards/
 knowledge-recording/coordination, declared "the loop is live, I'll come back with numbers,"

@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.7.1';
+const VERSION = '2.7.2';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1945,15 +1945,16 @@ COMMANDS['hook-precompact'] = (args) => {
   logEvent(sid, 'precompact', `auto-checkpointed before ${trigger || 'compaction'} (${claims.length} claim(s) held)`);
 };
 
-// PreToolUse(Edit|Write|MultiEdit|NotebookEdit) guard — the defensive layer that
-// makes a clobber IMPOSSIBLE, not just discouraged. Before any edit lands on disk:
-//   • if another LIVE session holds (or prefix-covers) the file → DENY the edit
-//     with an actionable reason (coordinate / contest / pick another slice);
-//   • if the file is unclaimed → AUTO-CLAIM it for this session so the rest of the
-//     crew is protected too, even if this session never ran `claim`;
-//   • otherwise (already mine / no board / not a repo) → allow silently.
-// Modes via CLASSROOM_EDIT_GUARD: deny (default) · warn (advise, never block) · off.
-// Must be fast and crash-proof: any error or doubt → allow the edit.
+// PreToolUse(Edit|Write|MultiEdit|NotebookEdit) guard — prevents clobbering a file a
+// genuinely-concurrent session holds, WITHOUT ever false-blocking a solo session.
+// Before any edit lands on disk:
+//   • another GENUINELY DISTINCT live session (a second active transcript) holds/
+//     prefix-covers the file → DENY with an actionable reason. The peer check keys off
+//     transcript files, so session-id drift can't make a solo session block itself.
+//   • file is unclaimed → AUTO-CLAIM it for this session so the crew is protected;
+//   • already mine / no genuine peer / no board / not a repo → allow silently.
+// Modes via CLASSROOM_EDIT_GUARD: deny (default, but only fires with a real peer) ·
+// warn (advise, never block) · off. Fast + crash-proof: any error or doubt → allow.
 COMMANDS['hook-pre-edit'] = (args) => {
   const allow = () => process.exit(0);
   const mode = String(process.env.CLASSROOM_EDIT_GUARD || 'deny').toLowerCase();
@@ -1969,19 +1970,33 @@ COMMANDS['hook-pre-edit'] = (args) => {
   try {
     ensureDirs();
     reap();
-    const sid = (input.session_id ? String(input.session_id) : sessionId(args));
+    // Ownership identity must match how `enroll`/`claim` (run via Bash) resolve it,
+    // or the guard sees the session's OWN claims as someone else's and false-blocks.
+    // When CLAUDE_CODE_SESSION_ID is exported both agree; when not, both fall back to
+    // the same grandparent-pid id. We use the real stdin session_id ONLY to recognise
+    // genuine concurrent sessions by their transcript.
+    const sid = sessionId(args);
+    const realSid = input.session_id ? String(input.session_id) : sid;
     // normalize to repo-relative logical keys; ignore anything outside the repo.
     const wants = rawPaths.map(normPath).filter((p) => p && p !== '.' && !p.startsWith('..'));
     if (!wants.length) return allow();
     const members = readMembers();
     const conflicts = [];
     for (const c of readClaims()) {
-      if (c.sid === sid) continue;
+      if (c.sid === sid || c.sid === realSid) continue; // never a conflict with myself
       const owner = members.find((x) => x.sid === c.sid);
       if (!isLive(owner)) continue;
       for (const w of wants) if (pathsOverlap(w, c.path)) conflicts.push({ w, c, owner });
     }
-    if (conflicts.length) {
+    // A deny is only legitimate if there's a genuinely DISTINCT concurrent session —
+    // a second live Claude transcript, not just a stray board record. detectPeers keys
+    // off actual transcript files, so it's immune to session-id drift: a SOLO session
+    // (the common case) has no peer here and therefore can NEVER be blocked by its own
+    // or a stale claim. This is what stops "operation stopped by hook" when it
+    // shouldn't be.
+    let genuinePeer = false;
+    try { genuinePeer = detectPeers(TTL_MS).some((p) => p.sid !== realSid && p.sid !== sid); } catch {}
+    if (conflicts.length && genuinePeer) {
       const x = conflicts[0];
       const who = label(x.owner);
       const reason = `🔒 Claude Classroom: "${x.w}" is held by another LIVE session — ${who}`
@@ -2002,7 +2017,7 @@ COMMANDS['hook-pre-edit'] = (args) => {
           const held = readClaims();
           const d = DIRS();
           for (const w of toClaim) {
-            const clash = held.some((c) => c.sid !== sid && isLive(live.find((x) => x.sid === c.sid)) && pathsOverlap(w, c.path));
+            const clash = held.some((c) => c.sid !== sid && c.sid !== realSid && isLive(live.find((x) => x.sid === c.sid)) && pathsOverlap(w, c.path));
             if (clash) continue;
             const dir = path.join(d.claims, claimKey(w));
             try { fs.mkdirSync(dir); } catch {}
