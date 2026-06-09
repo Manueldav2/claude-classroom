@@ -112,6 +112,26 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.7.0 — maximal agency: stop the passing-back-and-forth / laziness regression
+User: the accumulated guardrails (stand-down, back-off, hand-off, escalate-gating) had
+tilted sessions toward passivity — passing work around, recruiting instead of doing,
+asking instead of deciding. Re-tilted the whole system to action-by-default, with every
+stop/handoff mechanism reframed as a NARROW exception:
+- **PRIME DIRECTIVE** injected as the FIRST line of every SessionStart brief + a top
+  callout in SKILL.md: "You are a BUILDER, not a coordinator. Default to DOING the work
+  yourself end-to-end (research → build → test → iterate → ship). Don't pass work around,
+  recruit/hand off to dodge effort, stop early, or ask what you can decide/test/look up."
+- **Objectify, don't ask** (also from this session's prior ask): turn "which approach /
+  should I include X / what scope" into an experiment. New `baseline "<what>" --value
+  --how` records the original result on the board (survives compaction, refuses silent
+  overwrite); ship a change only if it BEATS the baseline. Brief + §O updated.
+- **Delegate/recruit reframed**: §C + §P + the recruit guidance now say delegation is for
+  PARALLELISM across already-live hands when you're saturated — NEVER to offload work you
+  could do; "a crew of one means you build the whole thing." Active-project brief says
+  "DO it yourself; don't delegate/recruit/ask to avoid it."
+Dogfooded on the claude-classroom repo: brief renders PRIME DIRECTIVE + OBJECTIFY + do-it-
+yourself first; Stop hook on a zero-task project drives "decompose + build", not stand-down.
+
 ## v2.6.4 — stop "just stopping": no compaction babysitting + stalled-handoff recovery
 Two user reports: (1) sessions stop working to PREP for compaction (checkpoint/nag) instead
 of just working until auto-compact — "make it not worry about compaction"; (2) a session at

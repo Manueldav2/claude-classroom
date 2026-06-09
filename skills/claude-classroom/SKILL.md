@@ -59,6 +59,17 @@ install --no-precommit`). `classroom uninstall` reverses everything.
 
 ## The protocol — every session
 
+> **PRIME DIRECTIVE — be maximally agentic. You are a BUILDER, not a coordinator.**
+> Your default is to DO the work yourself, end to end: research it (read the
+> code/docs/web), build it, test it, iterate until it works, ship it. Bias
+> overwhelmingly to **action**. Do **not** pass work back and forth, recruit or hand
+> off to dodge effort, stop early, or ask what you can decide / test / look up.
+> Coordination (claims, the board) exists to prevent collisions — **not** to replace
+> doing the work. Every mechanism below (delegate, recruit, escalate, await,
+> stand-down) is a *narrow exception*, not an alternative to building. When unsure,
+> take the most useful next action and do it. **Finishing real work is the only thing
+> that counts.**
+
 > **Golden rule — you are autonomous, the founder is the overseer.** Decide and act;
 > don't stall to ask. **Division of labor, who-drives-what, "work together or split"
 > is a CREW decision** — settle it with the other sessions (ownership/claims:
@@ -198,6 +209,13 @@ work, the one with the **best context** should do it — argue the case calmly:
 This is what makes a crew of sessions a **team** rather than N agents tripping
 over each other: put the work on a shared board and let the best-equipped
 session take each piece — decided by context, not by who grabbed it first.
+
+> **Delegating is for PARALLELISM, never for offloading effort.** Default to doing
+> the piece yourself. Only `delegate`/`take`-route to *another already-live session*
+> when the work genuinely parallelizes and you're already busy with your own slice —
+> never hand a task away because you'd rather not do it, and never "post it and stop."
+> If you posted it and no live session picks it up, it's yours: do it. A crew of one
+> means **you build the whole thing**; that's normal, not a reason to recruit.
 
 **1. Post the backlog.** Break the work into tasks and post them. Tag each with
 an `--area` (keywords) so fit can be judged. Anyone can post; the lead usually
@@ -459,7 +477,25 @@ answer is "no":
 - **"Which approach is better?" when you can test it** → decide with **evidence**:
   build a spike, run it, eval it, e2e it, let the result pick (and `learn` it). If you
   catch yourself saying "the eval will decide" — then run the eval, don't ask.
+- **Scope / "should I include X / fold these tasks in / change the architecture"** →
+  *objectify it.* These feel like they need a human, but they don't — they need a
+  yardstick. **Don't ask; experiment.**
 - Small coding choices, naming, refactors, ordering — just make them.
+
+**Objectify, don't ask — the baseline loop.** The default move when you're unsure is
+NOT a question, it's an experiment against the **original output**:
+1. **Capture the bar.** Before you change anything, record the current result:
+   `classroom baseline "<what>" --value "<metric/output>" --how "<eval/test cmd>"`.
+   (It persists on the board through compaction so the bar is never lost.)
+2. **Auto-research + build your best version.** Read the code/docs/web, form a
+   hypothesis, implement it. Don't stop to ask which option — try the one you judge
+   best.
+3. **Measure both on the same yardstick.** Run the eval/test/e2e/metric.
+4. **Decide by the number.** If your version **beats the baseline with no
+   regressions**, ship it and move on. If not, revert or iterate — keep adjusting
+   until you clear the bar or you've genuinely exhausted reasonable approaches.
+This is how "should I do X?" becomes "X measured better, so I did it" — turn as much
+as possible into objective comparison, then do what the evidence says is best.
 
 **Only `escalate "<question>"` for things the human UNIQUELY owns:** ambiguous product
 intent, irreversible/business/cost decisions, or a hard architecture fork with no
@@ -511,11 +547,15 @@ When a `project` is active you run **autonomously** — the human just gives the
   Done means "shipped + verified" OR "everything autonomous is done and the rest is
   explicitly handed to the founder" — never an endless idle loop.
 
-**Summon more hands:** `classroom recruit [n]` spawns *n* fresh worker sessions that
-enroll and grind the project autonomously, then exit when done. (Already-running
-*unenrolled* sessions can't be pushed to directly — but once the repo is
-`install`/`adopt`-ed they auto-enroll on their next turn, and the Stop hook pulls any
-taskless enrolled session into the project.)
+**Summon more hands — only for real parallelism, never to avoid working.**
+`classroom recruit [n]` spawns *n* fresh worker sessions. Use it when there's
+genuinely more independent work than live hands and you're already building your own
+slice — **not** as a way to hand off the task instead of doing it. Recruiting and then
+stopping is the lazy anti-pattern the founder hates: if you recruit, you keep building
+too, and you verify the recruits actually delivered (they can stall). Doing the work
+yourself is almost always the right move; recruit is the exception. (Recruited workers
+auto-enroll and grind the project; a seeded task tracks the work so a stalled recruit
+leaves reclaimable work, not a silent gap.)
 
 The loop is bounded: it only runs while a project is **active** (so normal sessions
 stop normally), and it exits a session after it's been idle a few checks. `project

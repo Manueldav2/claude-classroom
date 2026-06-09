@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.6.4';
+const VERSION = '2.7.0';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1875,6 +1875,7 @@ COMMANDS['hook-session-start'] = (args) => {
   const others = readMembers().filter((x) => isLive(x) && x.sid !== sid);
   const out = [];
   out.push('# Claude Classroom (auto-enrolled)');
+  out.push('PRIME DIRECTIVE — BE MAXIMALLY AGENTIC. You are a BUILDER, not a coordinator. Your default is to DO the work yourself, end to end: research it (read the code/docs/web), build it, test it, iterate until it works, and ship it. Bias overwhelmingly to ACTION. Do NOT pass work back and forth, do NOT recruit/hand off to avoid effort, do NOT stop early, do NOT ask the founder what you can decide, test, or look up. Coordination (claims/board) exists to stop collisions — NOT to replace doing the work. When in doubt: pick the most useful next action and do it. Finishing real work is the only thing that counts.');
   out.push(`You are one of ${others.length + 1} Claude Code session(s) on this repo. You were auto-enrolled as ${shortId(sid)}.`);
   if (others.length) {
     out.push('Other live sessions:');
@@ -1892,10 +1893,11 @@ COMMANDS['hook-session-start'] = (args) => {
   out.push('Before editing files, coordinate: `node ~/.claude/skills/claude-classroom/classroom.js survey <files>` then `claim` them, commit atomically, `sync` findings. Full protocol: the claude-classroom skill.');
   out.push('If you have deep context on a part of THIS codebase, declare it so work routes to you: `classroom own "<area or path>"`. To ask the operator of an area: `classroom whoknows <area>` then `classroom ask "<area>" "<question>"`.');
   out.push('DECIDE, don\'t defer: division-of-labor / who-drives-what / "work together or split" is a CREW decision — settle it with the other sessions (msg/ask/contest/ownership) and proceed; never ask the founder to bless it. "Which approach?" you can test = decide with evidence (run/eval/e2e). Don\'t ask the founder to ratify coordination you already did.');
+  out.push('OBJECTIFY, don\'t ask: turn "which approach / should I include X / what architecture / what scope" into an EXPERIMENT. Record the original result (`classroom baseline "<what>" --value "<metric/output>" --how "<eval cmd>"`), build your best version, measure BOTH on the same yardstick, and if yours beats the baseline with no regressions, ship it and move on — don\'t ask. Auto-research (read code/docs/web, form a hypothesis) and ITERATE until you clear the bar. Escalate ONLY the genuinely irreversible (prod deploy, sending to real users), the purely subjective (product intent no metric can settle), or the credential-gated.');
   out.push(`Tell the user they can watch the live dashboard with:  ${watchCmd()}`);
   const aproj = readProject();
   if (aproj && aproj.status === 'active') {
-    out.push(`🎯 ACTIVE PROJECT: "${aproj.goal}". Work AUTONOMOUSLY toward it — even if the founder gave YOU no task, pull/take open work, help teammates, run/eval/e2e your changes. Don't sit idle and don't ask the human for routine next-steps or to approve crew coordination; the Stop hook keeps you going until it's done. Escalate ONLY decisions the founder uniquely owns (ambiguous product intent / irreversible calls).`);
+    out.push(`🎯 ACTIVE PROJECT: "${aproj.goal}". DO the work toward it yourself — pick the highest-value piece, build it, test it, iterate, ship it; even with no task assigned to you, pull/take open work and BUILD. Don't delegate/recruit/ask to avoid doing it, don't sit idle, don't ask for routine next-steps. Keep going until it's genuinely finished + verified. Escalate ONLY what the founder uniquely owns (ambiguous product intent / irreversible calls); everything testable, decide by running it.`);
   }
   // After an auto-compaction this SessionStart hook fires with source "compact" —
   // re-inject the checkpoint so the session resumes exactly where it was.
@@ -2482,6 +2484,36 @@ COMMANDS.unpark = (args) => {
   logEvent(sid, 'unparked', branch);
   meshAuto && meshAuto();
   console.log(`✔ unparked "${branch}" — it's back in the finish-the-job tracking.`);
+};
+
+// baseline — record the ORIGINAL result (the bar to beat) so a session can decide
+// objectively instead of asking the founder: try a change, re-measure, ship it only
+// if it beats this. Survives sessions + compaction so the bar isn't forgotten.
+function readBaselines() { return readJSON(path.join(DIRS().root, 'baselines.json')) || {}; }
+function writeBaselines(o) { atomicWrite(path.join(ensureDirs().root, 'baselines.json'), JSON.stringify(o, null, 2)); }
+COMMANDS.baseline = (args) => {
+  ensureDirs();
+  const sid = sessionId(args); autoEnroll(sid); touch(sid);
+  const name = args._[0] || args.name;
+  const bs = readBaselines();
+  if (!name) {
+    const keys = Object.keys(bs);
+    if (!keys.length) { console.log('No baselines recorded. Before changing something, capture the bar to beat:\n  classroom baseline "<what>" --value "<metric/output>" --how "<eval/test cmd>"'); return; }
+    console.log('📊 BASELINES — the bars to beat (ship a change only if it measures BETTER):');
+    for (const k of keys) console.log(`   ${k}: ${bs[k].value}${bs[k].how ? DIM + '   how: ' + bs[k].how + RESET : ''}  ${DIM}(${shortId(bs[k].by)}, ${rel(bs[k].ts)})${RESET}`);
+    return;
+  }
+  const value = args.value != null ? String(args.value) : (args._.slice(1).join(' ') || '');
+  if (!value) { const b = bs[name]; if (b) { console.log(`📊 ${name}: ${b.value}${b.how ? '\n   how: ' + b.how : ''}`); return; } console.error('✗ usage: baseline "<name>" --value "<metric/output>" [--how "<reproduce cmd>"]'); process.exit(2); }
+  if (bs[name] && !args.force) {
+    console.error(`✗ baseline "${name}" already set to: ${bs[name].value}  (the bar is meant to be STABLE — beat it, don't move it). Use --force only to correct a mis-recording.`);
+    process.exit(1);
+  }
+  bs[name] = { value, how: args.how || '', by: sid, ts: now() };
+  writeBaselines(bs);
+  logEvent(sid, 'baseline', `${name} = ${value}`);
+  meshAuto && meshAuto();
+  console.log(`📊 baseline "${name}" = ${value} recorded. Now make your change and re-measure${args.how ? ' (`' + args.how + '`)' : ''}; ship it only if it BEATS this with no regressions — no need to ask.`);
 };
 
 // ---- land queue: serialize landing to main so branches don't race ----
@@ -3280,6 +3312,7 @@ USAGE: node classroom.js <command> [args]   (sid comes from $CLAUDE_CODE_SESSION
   project "<goal>" [--done ".."] | goal   set a long-running project + see backlog progress
   project await "<needs founder>" | resume  stand the crew down on founder-gated work / restart
   needs <id> [reason] [--off]             mark a task as needing the founder (not autonomous work)
+  baseline "<what>" --value ".." [--how ".."]   record the original result; beat it instead of asking
   mission "<goal>"                        broadcast a group goal; then partition it across teammates
   checkpoint "<where I am>" [--next ..] [--handoff]   save state so you can /compact then resume
   resume                                  reload your task/claims/next-steps after a compaction
