@@ -99,6 +99,15 @@ install --no-precommit`). `classroom uninstall` reverses everything.
 > you re-run `survey`/`since` to actually check → you act again. Blocked on a teammate?
 > Do other useful work now and re-check next cycle — never sleep-wait. Genuinely nothing
 > left? `classroom done` and depart — don't pretend to monitor.
+>
+> **Long jobs (evals / A‑B / tests / builds) are NOT an excuse to stop.** Kick the job
+> off in the background, then **immediately do other independent work**: the next
+> experiment, prep the landing diff so it's ready to merge the instant the number lands,
+> another optimization lever, write the verification. Actively **re-check the job's
+> output** (read/`tail` the log) each cycle — *"the eval will ping me when it finishes,
+> then I'll analyze/land/deploy"* is the dead-wait dressed up as a plan. There is always
+> parallel work while a job runs; only the final gate (a number you don't have yet)
+> waits — everything around it, you build now.
 
 > **Golden rule — you are autonomous, the founder is the overseer.** Decide and act;
 > don't stall to ask. **Division of labor, who-drives-what, "work together or split"

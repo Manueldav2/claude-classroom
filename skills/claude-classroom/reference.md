@@ -112,6 +112,17 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.7.4 — long jobs aren't an excuse to stop ("the eval will ping me")
+v2.7.3's NO FAKE MONITORING didn't name the most common trigger: a session kicks off a
+42-min background eval/A-B/test and stops with "the eval will ping me when both arms
+finish; I'll analyze, land, deploy then" — idle for 42 min, "2 shells still running."
+Added a "LONG JOBS" brief line + SKILL clause: kick the job off in the background, then
+IMMEDIATELY do other INDEPENDENT work this turn (next experiment, prep the landing diff,
+another lever, write the verification); actively re-CHECK the job's output file each cycle
+(read/tail the log). "It'll notify me when done" = dead-wait; "when X finishes I'll
+analyze/land/deploy" = narration. Only the final gate (the number you don't have yet)
+waits — everything around it you build NOW. Dogfooded.
+
 ## v2.7.3 — no fake monitoring: execute on the board, don't narrate or sleep-wait
 User: sessions say "I'll answer the question / I'll send a message / I'll periodically check
 the classroom," then `sleep` or just stop — believing they're still monitoring when they're
