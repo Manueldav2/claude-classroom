@@ -22,7 +22,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const TTL_MS = 30 * 60 * 1000; // a member is "live" if seen within 30 minutes
-const VERSION = '2.7.2';
+const VERSION = '2.7.3';
 
 // ---------------------------------------------------------------------------
 // tiny arg parser:  node classroom.js <cmd> [positionals...] [--flag val] [--bool]
@@ -1878,6 +1878,7 @@ COMMANDS['hook-session-start'] = (args) => {
   out.push('PRIME DIRECTIVE — BE MAXIMALLY AGENTIC. You are a BUILDER, not a coordinator. Your default is to DO the work yourself, end to end: research it (read the code/docs/web), build it, test it, iterate until it works, and ship it. Bias overwhelmingly to ACTION. Do NOT pass work back and forth, do NOT recruit/hand off to avoid effort, do NOT stop early, do NOT ask the founder what you can decide, test, or look up. Coordination (claims/board) exists to stop collisions — NOT to replace doing the work. When in doubt: pick the most useful next action and do it. Finishing real work is the only thing that counts.');
   out.push('PROGRESS = a SHIPPED, TESTED change. Research, plans, scorecards, knowledge notes, decrees, board coordination, and spawning helpers are NOT progress — they are setup, and stopping after them is FAILURE. The moment you have a candidate change, BUILD it and TEST it against the baseline THIS turn; keep it only if it measurably wins, then do the NEXT one. There is no self-running loop — YOU are the loop, so never say "the loop is live / self-sustaining / I\'ll come back with numbers" and then stop; run the next iteration right now. Don\'t sit "waiting for background agents" — build alongside them. Don\'t stop until the task is genuinely DONE and proven by a number.');
   out.push('MAKE EVERYTHING OBJECTIVE, then just test it. ANY "which is better / what scope / does this match your taste / should I include X" becomes an experiment: define a proxy metric (existing prod outputs or a written rubric as ground truth), measure the candidates, keep the winner. Do NOT ask the founder to label, rank, choose, or send you things you can derive, scrape, read, or proxy yourself — go get it or approximate it and MEASURE. The only real stops: genuinely irreversible actions (real send/DM/post/launch/spend) and a credential you truly cannot obtain.');
+  out.push('NO FAKE MONITORING — you have NO background loop. When your turn ends you are IDLE until something re-triggers you, so `sleep`-waiting or saying "I\'ll periodically check / keep watching / monitor / circle back" is a HALLUCINATION: you silently stop while believing you\'re working. NEVER narrate an intention — "I\'ll message X", "I\'ll answer that", "I\'ll check the board" — EXECUTE it on the board THIS turn (run the actual `msg`/`ask`/`survey`/`status`/`finish` command) and VERIFY the result on the board; saying you\'ll do it is not doing it, and you must check the classroom (run the command) before you claim anything about it. The only real "keep going" is the Stop-hook loop on an active project: act → end turn → it brings you back → you re-run `survey`/`since` to actually CHECK → act again. Blocked on a teammate? Do OTHER useful work now and re-check next cycle — never sleep-wait. Truly nothing to do? `classroom done` and depart — do not pretend to monitor.');
   out.push(`You are one of ${others.length + 1} Claude Code session(s) on this repo. You were auto-enrolled as ${shortId(sid)}.`);
   if (others.length) {
     out.push('Other live sessions:');
@@ -2127,7 +2128,7 @@ COMMANDS['hook-stop'] = (args) => {
     writeMember(m);
     const shipped = all.some((t) => t.status === 'done');
     const noShipNote = shipped ? '' : ' NOTHING has shipped yet — research/plans/scorecards/coordination are NOT progress; only a built, tested, committed change counts.';
-    return block(`Project "${proj.goal}" isn't done — do NOT stop, narrate a "self-running loop", or ask the user.${noShipNote} ${action}. Build it and TEST it against the baseline this turn, commit atomically, then run the NEXT iteration yourself. (If this nudge is genuinely wrong — e.g. it pushes a destructive merge — just stop; it backs off after ${MAX_BLOCKS} repeats. \`park\` a branch you won't land.)`);
+    return block(`Project "${proj.goal}" isn't done — do NOT stop, \`sleep\`/"monitor", narrate a "self-running loop", or ask the user.${noShipNote} ${action}. Don't just SAY you'll do it — RUN the commands now and re-check the board with \`survey\`/\`since\`. Build it, TEST it against the baseline this turn, commit atomically, then run the NEXT iteration yourself. (If this nudge is genuinely wrong — e.g. it pushes a destructive merge — just stop; it backs off after ${MAX_BLOCKS} repeats. \`park\` a branch you won't land.)`);
   }
   if (m.lastStopSig || m.stopRepeat || m.releasedSig) { m.lastStopSig = null; m.stopRepeat = 0; m.releasedSig = null; writeMember(m); }
   const claimsHeld = readClaims().filter((c) => c.sid === sid).length;

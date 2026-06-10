@@ -87,6 +87,19 @@ install --no-precommit`). `classroom uninstall` reverses everything.
 > yourself — go get it and measure. The only real stops are genuinely irreversible
 > actions (real send/DM/post/launch/spend) and a credential you truly cannot obtain.
 
+> **No fake monitoring — you have NO background loop.** When your turn ends you are
+> **idle** until something re-triggers you. So `sleep`-waiting, or saying "I'll
+> periodically check the board / keep watching / monitor / circle back," is a
+> hallucination — you silently stop while *believing* you're still working. Two rules:
+> **(1) Execute, don't narrate.** Never say "I'll message X" / "I'll answer that" /
+> "I'll check the classroom" — run the actual `msg`/`ask`/`survey`/`status`/`finish`
+> command **this turn** and verify the result on the board. *Checking the classroom
+> means running the command*, not promising to. **(2) The only real "keep going" is the
+> Stop-hook loop** (active project): you act → end the turn → the hook brings you back →
+> you re-run `survey`/`since` to actually check → you act again. Blocked on a teammate?
+> Do other useful work now and re-check next cycle — never sleep-wait. Genuinely nothing
+> left? `classroom done` and depart — don't pretend to monitor.
+
 > **Golden rule — you are autonomous, the founder is the overseer.** Decide and act;
 > don't stall to ask. **Division of labor, who-drives-what, "work together or split"
 > is a CREW decision** — settle it with the other sessions (ownership/claims:

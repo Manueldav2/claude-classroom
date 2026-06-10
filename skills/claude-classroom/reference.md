@@ -112,6 +112,22 @@ Run: `node ~/.claude/skills/claude-classroom/classroom.js <cmd>`
   `suggest`, un-takeable until the dep `finish`es, then auto-unblock.
 - **`watch`** — live refreshing board dashboard.
 
+## v2.7.3 — no fake monitoring: execute on the board, don't narrate or sleep-wait
+User: sessions say "I'll answer the question / I'll send a message / I'll periodically check
+the classroom," then `sleep` or just stop — believing they're still monitoring when they're
+idle and dead. Root misconception: a session thinks it has a background loop. It doesn't.
+Added a "NO FAKE MONITORING" directive to the brief + a top SKILL callout:
+- You have NO background loop — when your turn ends you're IDLE until re-triggered, so
+  `sleep`-waiting / "I'll keep watching / circle back" is a hallucination.
+- EXECUTE, don't narrate: never say "I'll message X / I'll check the board" — run the actual
+  `msg`/`ask`/`survey`/`status`/`finish` command THIS turn and verify on the board. Checking
+  the classroom = running the command, not promising to.
+- The only real "keep going" is the Stop-hook loop (active project): act → end turn → hook
+  re-engages → re-run `survey`/`since` to actually check → act again. Blocked on a teammate →
+  do other work + re-check next cycle, never sleep. Nothing left → `classroom done`, don't fake-monitor.
+- Stop hook message now explicitly forbids `sleep`/"monitor" and says "RUN the commands now and
+  re-check the board with survey/since." Dogfooded.
+
 ## v2.7.2 — fix the edit-guard false "operation stopped by hook" (solo sessions)
 User: "Operation stopped by hook when it shouldn't be." Root cause: when
 CLAUDE_CODE_SESSION_ID isn't exported, Bash `claim`/`enroll` resolve identity via the
